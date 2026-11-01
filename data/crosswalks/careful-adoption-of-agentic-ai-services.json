@@ -819,10 +819,14 @@
     },
     {
       "id": "design/identity-management/1",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "MoorAI does not issue or manage agent identities"
+      "evidence": [
+        "agent-session-identity",
+        "gateway-identity",
+        "model-proxy-identity"
+      ],
+      "limit": "agent session identities signed with the device's ed25519 key and verified by MoorAI's MCP gateway and model proxy; no managed identity service or identity provider, and the key is not hardware-backed"
     },
     {
       "id": "design/identity-management/2",
@@ -840,10 +844,13 @@
     },
     {
       "id": "design/identity-management/4",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "no registry of agent identities or keys to deny against"
+      "evidence": [
+        "gateway-identity",
+        "model-proxy-identity"
+      ],
+      "limit": "agentIdentity require denies an MCP or model request whose identity is not signed by this device's key, and revoked sessions are denied; the device does not check that a session is registered with the console, so a same-user process can mint an unregistered session"
     },
     {
       "id": "design/identity-management/5",
@@ -996,7 +1003,7 @@
         "gateway-validate",
         "mask"
       ],
-      "limit": "detection on prompts, files and tool results on hooked surfaces, and message validation through the HTTP gateway; sanitisation is masking on the Claude Code hook only"
+      "limit": "detection on prompts, files and tool results on hooked surfaces, and message validation through the HTTP gateway; sanitisation is masking on the Claude Code hook, and on tool results at the MCP guard, the MCP gateway and the model proxy in enforce mode"
     },
     {
       "id": "develop/input-management/2",
@@ -1066,11 +1073,12 @@
       "status": "partial",
       "threats": [],
       "evidence": [
+        "operator-stop",
         "kill",
         "host-isolation",
         "offline-posture"
       ],
-      "limit": "a kill verdict ends the agent session on the desktop host, macOS isolation is opt-in, and MoorAI itself fails open unless the fail-closed posture is set"
+      "limit": "an administrator's stop or a kill verdict ends the agent session (SIGTERM on macOS and Linux, the desktop host's agent), macOS isolation is opt-in, and MoorAI itself fails open unless the fail-closed posture is set"
     },
     {
       "id": "develop/resilience/2",
@@ -1083,7 +1091,8 @@
         55,
         59,
         65,
-        77
+        77,
+        90
       ],
       "evidence": [
         "det-secrets",
@@ -1151,7 +1160,9 @@
         "reputation",
         "repo-link",
         "det-pkg-install",
-        "det-typosquat"
+        "det-typosquat",
+        "pkg-known-bad",
+        "mcp-package-policy"
       ],
       "limit": "MCP server packages scored at first launch (provenance, repository link, known-malicious and typosquat names) and install commands judged; whether a component is up to date is not checked"
     },
@@ -1179,14 +1190,16 @@
       "id": "develop/third-party-components/4",
       "status": "partial",
       "threats": [
-        25
+        25,
+        57
       ],
       "evidence": [
         "server-allow",
         "tool-drift-block",
-        "envelope"
+        "envelope",
+        "mcp-package-policy"
       ],
-      "limit": "servers by label and approved tool fingerprints; versions are not pinned and the tools are not verified as secure"
+      "limit": "servers by label, approved tool fingerprints, and npm / PyPI server versions pinned by mcpPackagePolicy (requirePins holds any unpinned registry server); other component types are not registered and the tools are not verified as secure"
     },
     {
       "id": "develop/third-party-components/5",
@@ -1835,10 +1848,13 @@
     },
     {
       "id": "operate/privileges-and-authentication/5",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "API caller identity is not verified"
+      "evidence": [
+        "gateway-identity",
+        "model-proxy-identity"
+      ],
+      "limit": "the MCP gateway and the model proxy verify the caller's agent session identity on every request (require refuses an unverified caller); identity is not checked against user or agent groups"
     },
     {
       "id": "operate/privileges-and-authentication/6",
@@ -1876,9 +1892,11 @@
       "threats": [],
       "evidence": [
         "arg-scan",
-        "policy-signature"
+        "policy-signature",
+        "gateway-identity",
+        "model-proxy-identity"
       ],
-      "limit": "every hooked call is decided against a centrally distributed, verified policy; identity is not verified"
+      "limit": "every hooked call is decided against a centrally distributed, verified policy, and the MCP gateway and the model proxy verify the agent session identity per request against the signed revocation list; hook calls are not tied to a verified identity"
     },
     {
       "id": "future/threat-intelligence/1",
@@ -2131,7 +2149,9 @@
       "evidence": [
         "reputation",
         "det-pkg-install",
-        "det-typosquat"
+        "det-typosquat",
+        "pkg-known-bad",
+        "mcp-package-policy"
       ],
       "limit": "install commands and MCP server packages are judged at the point of use; supply-chain risk management is the organisation's"
     },

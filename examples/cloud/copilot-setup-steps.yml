@@ -1,0 +1,44 @@
+# Copy to .github/workflows/copilot-setup-steps.yml on the repository's default branch, and copy
+# copilot-hooks.json to .github/hooks/moorai.json in the same repository.
+#
+# GitHub runs this job "in GitHub Actions before Copilot starts working". It installs MoorAI and binds its
+# server mode to your console; the repository hook file then runs MoorAI's Copilot adapter on every tool call.
+# The job MUST be called copilot-setup-steps. Values come from the repository's `copilot` environment
+# (Settings > Environments > copilot): variables MOORAI_SERVER_URL, MOORAI_TENANT, and either the secret
+# MOORAI_INSTALL_TOKEN (a static workload token from the console) or the variable MOORAI_WORKLOAD_ID for the
+# OIDC exchange below, and the variable MOORAI_REF: the MoorAI release tag to install. The clone pins that tag
+# and the job fails without it, so every session runs the release you chose, never the moving main branch.
+#
+# Add the console's host to the Copilot firewall's custom allowlist (Settings > Copilot > Internet access)
+# so the hook can reach it during the session. Alerts the hook cannot deliver wait in its outbox.
+name: Copilot Setup Steps
+on:
+  workflow_dispatch:
+  push:
+    paths: [.github/workflows/copilot-setup-steps.yml]
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    environment: copilot
+    permissions:
+      contents: read
+      id-token: write   # only for the OIDC exchange (MOORAI_WORKLOAD_ID + MOORAI_OIDC=github); remove for a static token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install MoorAI and bind server mode
+        env:
+          MOORAI_SERVER_URL: ${{ vars.MOORAI_SERVER_URL }}
+          MOORAI_TENANT: ${{ vars.MOORAI_TENANT }}
+          MOORAI_INSTALL_TOKEN: ${{ secrets.MOORAI_INSTALL_TOKEN }}
+          MOORAI_WORKLOAD_ID: ${{ vars.MOORAI_WORKLOAD_ID }}
+          MOORAI_OIDC: ${{ vars.MOORAI_WORKLOAD_ID && 'github' || '' }}
+          MOORAI_SERVICE_ID: copilot:${{ github.repository }}
+          MOORAI_REF: ${{ vars.MOORAI_REF }}
+        run: |
+          : "${MOORAI_REF:?set the copilot environment variable MOORAI_REF to a MoorAI release tag}"
+          sudo git clone --depth 1 --branch "$MOORAI_REF" https://github.com/gitayg/moorai.git /opt/moorai
+          sudo -E "$(command -v node)" /opt/moorai/cli/moorai-cloud-setup.mjs copilot-coding-agent --install-dir /opt/moorai

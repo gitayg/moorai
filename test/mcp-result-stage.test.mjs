@@ -50,6 +50,7 @@ import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 import { resultOfResponse, resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
+import { hashWithKey, deriveKey } from "../cli/content-hash.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -149,6 +150,10 @@ async function driveGuard({ home, url, serverLabel = "testsrv", env = {}, reques
 function writeFixture(home, name, text) { const p = join(home, name); writeFileSync(p, text); return p; }
 const call = (id, name, args = {}) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 const resultAlerts = (con) => con.alerts.filter((a) => a.stage === "result");
+// The opt-out from the default #39 result mask (cli/inbound.mjs CRED_RESULT_DECISION): an org action for #39.
+// Tests about transport (framing, byte identity) use it so the fixture's secret reaches the wire unaltered.
+const NOTIFY_39 = () => sign({ captureTier: "content-free", threatPolicy: { 39: "notify" } });
+const TAG = /\[MOORAI:secret:[a-p]{8}\]/;
 
 // =====================================================================================
 // 1. REACHABILITY — the headline. The exact `read-dotenv` miss from condition B.
@@ -166,7 +171,8 @@ test("RESULT STAGE: a tools/call result carrying a credential file is scanned an
 
     const reply = r.byId.get(1);
     assert.ok(reply, "the tools/call result never arrived");
-    assert.equal(reply.result.content[0].text, DOTENV, "the result must reach the agent unaltered — this path observes, it does not redact");
+    assert.match(reply.result.content[0].text, TAG, "the default masks a credential in a result (CRED_RESULT_DECISION)");
+    assert.ok(!reply.result.content[0].text.includes("AKIAIOSFODNN7EXAMPLE"), "the masked span reached the agent");
     assert.ok(readFileSync(recv, "utf8").includes("/home/u/creds/.env"), "the call must still reach the real server");
 
     const found = resultAlerts(con);
@@ -198,6 +204,20 @@ test("CONTENT-FREE: not one byte of the result content appears in anything poste
     for (const a of resultAlerts(con)) {
       assert.ok(typeof a.contentHash === "string" && a.contentHash.length > 0, "every result alert must carry a keyed one-way hash");
     }
+  });
+});
+
+test("#90: a card number in a tools/call result is reported with a process-keyed hash, never the number or its install-token-keyed hash", async () => {
+  await scenario({}, async ({ con, home }) => {
+    const PAN = "4111 1111 1111 1111";
+    const f = writeFixture(home, "customer.txt", `Customer on file. Card ${PAN}, expires 12/26.`);
+    await driveGuard({ home, url: con.url, env: { FAKE_RESULT_FILE: f }, requests: [call(1, "read_file", { path: "/crm/customer.txt" })] });
+    const card = resultAlerts(con).filter((a) => a.threatId === 90);
+    assert.ok(card.length > 0, `no #90 result alert: ${JSON.stringify(resultAlerts(con).map((a) => a.threatId))}`);
+    for (const a of card) assert.match(a.contentHash, /^proc:[0-9a-f]{16}$/);
+    const tenant = (s) => hashWithKey(deriveKey("tok"), s);
+    const blob = JSON.stringify(con.alerts);
+    for (const x of [PAN, PAN.replace(/\D/g, ""), tenant(PAN), tenant(PAN.replace(/\D/g, ""))]) assert.ok(!blob.includes(x), `alert payload carries ${x}`);
   });
 });
 
@@ -235,7 +255,7 @@ test("FAIL-OPEN: a throwing RESULT SCAN still delivers the result intact", async
 // 4. BYTE-IDENTITY — observation, not rewriting, asserted on the WIRE.
 // =====================================================================================
 test("BYTE-IDENTITY: a tools/call result is forwarded byte-for-byte", async () => {
-  await scenario({}, async ({ con, home }) => {
+  await scenario({ policyBody: NOTIFY_39() }, async ({ con, home }) => {
     // Deliberately non-canonical: odd spacing, `result` key order, a trailing space.
     // The text carries the AKIA key ID as well as the secret line, because #39 in this repo's corpus
     // matches on the KEY ID (measured: the `AWS_SECRET_ACCESS_KEY=...` line alone scores zero
@@ -259,7 +279,7 @@ test("BYTE-IDENTITY: a tools/call result is forwarded byte-for-byte", async () =
 // 5. FRAMING + ORDERING — many results, interleaved, none split / dropped / reordered.
 // =====================================================================================
 test("FRAMING: 40 back-to-back results arrive complete, in order, one line each", async () => {
-  await scenario({}, async ({ con, home }) => {
+  await scenario({ policyBody: NOTIFY_39() }, async ({ con, home }) => {
     const secret = writeFixture(home, "dotenv.txt", DOTENV);
     const requests = [];
     for (let i = 1; i <= 40; i++) requests.push(call(i, "read_file", { path: `/p/${i}/.env` }));
@@ -277,7 +297,7 @@ test("FRAMING: 40 back-to-back results arrive complete, in order, one line each"
 });
 
 test("FRAMING: a multi-byte character straddling a chunk boundary is not corrupted", async () => {
-  await scenario({}, async ({ con, home }) => {
+  await scenario({ policyBody: NOTIFY_39() }, async ({ con, home }) => {
     // A 200 KB result of 3-byte UTF-8 characters guarantees a character lands across a chunk edge.
     const text = "אבג".repeat(20000) + DOTENV;
     const secret = writeFixture(home, "wide.txt", text);
@@ -358,7 +378,7 @@ test("SHAPES: resultOfResponse matches tool results and rejects listings, reques
 // =====================================================================================
 // 7. REPORT-FIRST — the DEFAULT policy must not start blocking results...
 // =====================================================================================
-test("REPORT-FIRST: under the default policy #39 resolves to notify, so the result is reported and forwarded", async () => {
+test("REPORT-FIRST: under the default policy #39 is masked, not blocked: the result is delivered with the span replaced, and reported", async () => {
   await scenario({}, async ({ con, home }) => {
     const secret = writeFixture(home, "dotenv.txt", DOTENV);
     const r = await driveGuard({
@@ -366,9 +386,22 @@ test("REPORT-FIRST: under the default policy #39 resolves to notify, so the resu
       requests: [call(1, "read_file", { path: "/x/.env" })]
     });
     const reply = r.byId.get(1);
-    assert.equal(reply.result.content[0].text, DOTENV, "the default policy must not withhold a result — turning blocking on is an admin decision");
     assert.ok(!reply.result.isError, "an unconfigured device must not turn a delivered result into an error");
-    assert.ok(resultAlerts(con).some((a) => a.threatId === 39), "...but it must still REPORT");
+    assert.match(reply.result.content[0].text, TAG);
+    for (const leak of ["wJalrXUtnFEMIK7MDENGbPxRfiCYzEXAMPLEKEY1", "AKIAIOSFODNN7EXAMPLE"]) assert.ok(!r.raw.includes(leak), `the masked secret reached the agent: ${leak}`);
+    assert.match(reply.result.content.at(-1).text, /masked \d+ sensitive span/, "the model is told the tags are not the value");
+    assert.ok(resultAlerts(con).some((a) => a.threatId === 39 && a.decision === "notify"), "...and it must still REPORT the finding");
+    assert.ok(con.alerts.some((a) => a.category === "Sensitive span masked" && a.decision === "mask" && a.tool === "desktop:read_file"), "the mask is recorded, content-free");
+  });
+});
+
+test("REPORT-FIRST: an org action for #39 (notify) opts out of the default mask: the result is forwarded unaltered", async () => {
+  await scenario({ policyBody: NOTIFY_39() }, async ({ con, home }) => {
+    const secret = writeFixture(home, "dotenv.txt", DOTENV);
+    const r = await driveGuard({ home, url: con.url, env: { FAKE_RESULT_FILE: secret }, requests: [call(1, "read_file", { path: "/x/.env" })] });
+    assert.equal(r.byId.get(1).result.content[0].text, DOTENV);
+    assert.ok(resultAlerts(con).some((a) => a.threatId === 39));
+    assert.ok(!con.alerts.some((a) => a.category === "Sensitive span masked"));
   });
 });
 
@@ -580,7 +613,7 @@ test("REGRESSION: widening the observer past the \"tools\" filter did not break 
 // A guard against the harness itself going quiet: if the fake server ever stops honouring
 // FAKE_RESULT_FILE, every test above would pass vacuously on an echoed benign payload.
 test("HARNESS: FAKE_RESULT_FILE actually replaces the echo, so the tests above are not vacuous", async () => {
-  await scenario({}, async ({ con, home }) => {
+  await scenario({ policyBody: NOTIFY_39() }, async ({ con, home }) => {
     const secret = writeFixture(home, "dotenv.txt", DOTENV);
     const r = await driveGuard({ home, url: con.url, env: { FAKE_RESULT_FILE: secret }, requests: [call(1, "read_file", { path: "/x" })] });
     const text = r.byId.get(1).result.content[0].text;

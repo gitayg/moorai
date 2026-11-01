@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
-import { evalSample, score } from "./redteam-eval.mjs";
+import { evalSample, score, sampleCtx } from "./redteam-eval.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CORPUS = "test/redteam/benign-corpus-v2.json";
@@ -60,7 +60,8 @@ export function groupFp(rows, key) {
 // The engine's finding carries `detectorId` alongside the threat; evalSample only keeps threat ids, so we
 // re-derive the detector attribution for the FP rows only (content-free, and cheap — FPs are rare).
 async function attribute(engine, sample) {
-  const findings = await engine.scan(sample.text, sample.stage || "prompt");
+  const stage = sample.stage || "prompt";
+  const findings = await engine.scan(sample.text, stage, sampleCtx(stage));
   return {
     detectors: [...new Set(findings.map((f) => f.detectorId))],
     threats: [...new Set(findings.map((f) => f.threat?.id))],
@@ -75,7 +76,7 @@ export async function runCorpus({ file = DEFAULT_CORPUS, strict = false } = {}) 
   const samples = (data.benign || []).map((s) => ({ ...s, shouldDetect: false }));
 
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
-  const scan = (text, stage) => engine.scan(text, stage);
+  const scan = (text, stage) => engine.scan(text, stage, sampleCtx(stage));
 
   const rows = [];
   for (const s of samples) {

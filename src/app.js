@@ -3,12 +3,13 @@ import { compilePacks } from "../data/detector-packs.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { TIER_OF } from "../data/data-tiers.js";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
 import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, enrolBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
-import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
+import { ocrCapability, ocrImage, engineLabel, decideImageInspection, providerOptIn, providerChoice, setProviderChoice } from "./ocr.js";
 import { wireClipGuard } from "./clipguard.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -80,7 +81,7 @@ async function boot() {
   // local device scans (apps, browsers, OS patches) run.
   $("sb-server").className = "sb-item";
   $("sb-server").innerHTML = '<span class="dot"></span> connecting…';
-  startPolling();
+  const firstPolicy = startPolling();
 
   // Auto-update. Native: silently download + install a newer signed build in the background, then
   // apply on restart (the idle timer restarts automatically). Browser: just offer the download.
@@ -90,8 +91,9 @@ async function boot() {
     checkUpdate().then((u) => { if (u && u.updateAvailable) { pendingUpdate = u; showUpdate(u); } });
   }
 
-  // Device reporting runs in the background; its scans take a few seconds.
-  reportDevice().then((dev) => {
+  // Device reporting runs in the background; its scans take a few seconds. It waits for the first policy request
+  // (bounded by the host's 4 s console timeout), whose corporateDomains the account classification needs.
+  firstPolicy.catch(() => {}).then(() => reportDevice()).then((dev) => {
     renderDeviceInfo(dev);
     reportPatches(dev).then((p) => { if (p) renderDeviceInfo({ ...dev, patches: p }); });
   });
@@ -140,6 +142,8 @@ function updateStatusbar(reachable) {
   const srv = $("sb-server");
   srv.className = "sb-item " + (ok ? "ok" : "off");
   srv.innerHTML = `<span class="dot"></span> ${ok ? "server connected" : "server offline"}`;
+  // Unenrolled there is no console and getPolicy() asks none: say that rather than "offline".
+  if (!enrolled()) { srv.className = "sb-item"; srv.innerHTML = `<span class="dot"></span> not enrolled — nothing is sent`; }
   // The host refused or ignored a console (console_binding.rs) — say so; the reason is the tooltip.
   const cw = consoleWarning();
   srv.title = cw || "";
@@ -204,6 +208,7 @@ function switchTool(t) {
 // Self-rescheduling poll. Interval comes from the server (policy.pollSeconds), so admins can
 // tune fleet request volume centrally; clamped to a 15s floor.
 let pollTimer;
+// → the first tick's promise, so a caller can wait for the first policy request.
 function startPolling() {
   clearTimeout(pollTimer);
   const tick = async () => {
@@ -211,7 +216,7 @@ function startPolling() {
     const secs = Math.max(15, Number(policy?.pollSeconds) || 60);
     pollTimer = setTimeout(tick, secs * 1000);
   };
-  tick();
+  return tick();
 }
 
 function closeAbout() { $("about-dialog").hidden = true; $("about-backdrop").hidden = true; }
@@ -396,7 +401,7 @@ function toAgent(text) { sendRaw(text + "\r"); }
 // Per-threat action wins; else the data-tier default (policy.tierPolicy) for the threat's tier;
 // else "notify". Lets an admin govern by data class without losing any per-threat override.
 function threatAction(id) {
-  const explicit = policy?.threatPolicy?.[id];
+  const explicit = threatPolicyEntry(policy, id);
   if (explicit) return explicit;
   const tier = TIER_OF[id];
   const tierAct = tier && policy?.tierPolicy?.[tier];
@@ -427,9 +432,9 @@ function reviewContent(text, reviewStage, mount) {
   return blocked;
 }
 
-function renderFindings(text, stage, mount) {
+function renderFindings(text, stage, mount, ctx) {
   let blocked = false;
-  for (const f of engine.scan(text, stage)) {
+  for (const f of engine.scan(text, stage, ctx)) {
     const act = threatAction(f.threat.id);
     if (act === "disabled") continue;
     lastFound++;
@@ -476,7 +481,7 @@ function blocksIn(text) {
   const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   for (const c of engine.scanContent(text, enabled)) { const a = cp[c.ruleId] || "disabled"; if (a === "block" || a === "justify") out.push({ match: c.match, label: c.label }); }
-  for (const f of engine.scan(text, "prompt")) { const a = threatAction(f.threat.id); if (a === "block" || a === "justify") out.push({ match: f.match, label: f.threat.category }); }
+  for (const f of engine.scan(text, "prompt", { scope: "user-prompt" })) { const a = threatAction(f.threat.id); if (a === "block" || a === "justify") out.push({ match: f.match, label: f.threat.category }); }
   return out;
 }
 
@@ -508,7 +513,7 @@ function sendMessage() {
 
   lastFound = 0;
   const cb = reviewContent(text, "shared", review);
-  const fb = renderFindings(text, "prompt", review);
+  const fb = renderFindings(text, "prompt", review, { scope: "user-prompt" });
   renderLog();
 
   if (cb || fb) {
@@ -593,8 +598,9 @@ async function handleFile(file, source) {
   } else if ((file.type || "").startsWith("image/")) {
     // #23 — recover the image's text and run it through the SAME PII/secret policy as any file. The
     // OS's own engine does it on-device (macOS Vision / Windows OCR): no bundled model, and the image
-    // never leaves the machine. Where the OS ships no engine we say so and, only with a provider key
-    // already on this device, offer the disclosed device → provider fallback. Otherwise: skipped.
+    // never leaves the machine. Where the OS ships no engine we say so; the disclosed device → provider
+    // fallback runs only with a provider key already on this device AND the fallback turned on (the
+    // console's policy, or the user in Settings). Otherwise: skipped.
     const note = document.createElement("div");
     note.className = "card coach";
     note.innerHTML = `<div class="top"><span class="chip lvl coach">Image</span><span class="name">Image ${esc(source)}</span></div><div class="hint"></div>`;
@@ -604,7 +610,8 @@ async function handleFile(file, source) {
     const plan = decideImageInspection(cap, {
       sizeBytes: file.size || 0,
       maxBytes: cap.maxBytes || 4 * 1024 * 1024,
-      policyDisabled: policy?.imageInspection?.enabled === false
+      policyDisabled: policy?.imageInspection?.enabled === false,
+      providerOptIn: providerOptIn(policy, providerChoice())
     });
     hint.textContent = plan.hint;
     if (plan.mode !== "skip") {
@@ -741,6 +748,7 @@ function wireEnrollment() {
       $("signup-name").value = ""; $("signup-email").value = "";
       refreshEnrollChip();
       await loadIdentity();
+      startPolling(); // the first policy request this device makes
       const dev = await reportDevice();
       reportPatches(dev);
     } catch (e) {
@@ -762,6 +770,7 @@ function wireEnrollment() {
       refreshEnrollChip();
       // Re-report immediately so the device moves to the enrolled tenant without an app restart.
       await loadIdentity();
+      startPolling(); // the first policy request this device makes
       const dev = await reportDevice();
       reportPatches(dev);
     } catch (e) {
@@ -784,6 +793,10 @@ function wireEnrollment() {
   $("auth-method").value = getAuthMethod();
   applyAuthMethod(getAuthMethod());
   $("auth-method").addEventListener("change", (e) => { setAuthMethod(e.target.value); applyAuthMethod(e.target.value); });
+
+  // The OCR provider fallback: off unless the user turns it on here (or the console's policy does).
+  const ocrBox = $("ocr-provider");
+  if (ocrBox) { ocrBox.checked = providerChoice(); ocrBox.addEventListener("change", () => setProviderChoice(ocrBox.checked)); }
 
   $("agent-key-btn").addEventListener("click", async () => {
     const token = $("agent-token").value.trim();

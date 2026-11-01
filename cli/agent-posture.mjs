@@ -42,12 +42,19 @@
 //     "unrestricted"; sandbox.mode — documented key, values not documented ("disabled" is what the CLI
 //     writes; observed on disk). Hooks: ~/.cursor/hooks.json, <project>/.cursor/hooks.json.
 //   GitHub Copilot CLI: hook registration only; no weakening setting is read.
+//   Factory Droid (docs.factory.com/droid-cli/settings.md, /enterprise/hierarchical-settings-and-org-control.md,
+//     fetched 2026-10-18): hooksDisabled "Globally disable all hooks execution"; allowManagedHooksOnly (org)
+//     "only org-managed hooks and hooks from org-enabled plugins are loaded". Files: ~/.factory/settings.json,
+//     settings.local.json beside it ("Its values merge on top"), <project>/.factory/ the same, and the managed
+//     file (macOS /Library/Application Support/Factory/settings.json, /etc/factory/settings.json,
+//     C:\Program Files\Factory\settings.json). Sessions: ~/.factory/projects/ (the hooks docs' example
+//     transcript_path "/Users/.../.factory/projects/.../session.jsonl").
 //
 // CONTAINMENT (Windows only, cli/mxc-detect.mjs): on win32 each Claude Code, Codex and Copilot entry
 // also carries `containment: { kind, scope, source }` (is the agent's command execution inside a
 // Microsoft Execution Container), and the report carries the device's `mxcCapable`. Other platforms
 // get neither field: there the sandbox story is the existing sandboxOff / sandboxFullAccess flags.
-import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -101,7 +108,13 @@ export const SESSION_DIRS = {
   codex: (home, env) => [[join(env.CODEX_HOME || join(home, ".codex"), "sessions"), 4]],
   gemini: (home) => [[join(home, ".gemini", "tmp"), 3]],
   cursor: (home) => [[join(home, ".cursor", "chats"), 3]],
-  copilot: (home, env) => [[join(env.COPILOT_HOME || join(home, ".copilot"), "session-state"), 2]]
+  copilot: (home, env) => [[join(env.COPILOT_HOME || join(home, ".copilot"), "session-state"), 2]],
+  droid: (home) => [[join(home, ".factory", "projects"), 3]],
+  // Documented stores, not measured (data/agent-state-paths.js has the sources). Kiro's session database
+  // file name in ~/.kiro is not documented, so Kiro shows only once its hook is registered.
+  antigravity: (home) => ["antigravity", "antigravity-cli", "antigravity-ide"].map((d) => [join(home, ".gemini", d, "brain"), 4]),
+  windsurf: (home) => [[join(home, ".windsurf", "transcripts"), 1]],
+  cline: (home) => [[join(home, ".cline", "data", "sessions"), 2]]
 };
 function newest(dir, depth, k = 8) {
   let entries;
@@ -220,7 +233,28 @@ function cursorFlags({ home, cwd }) {
   return flags;
 }
 
-const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: geminiFlags, cursor: cursorFlags };
+export function droidSystemFile(platform = process.platform) {
+  if (platform === "darwin") return "/Library/Application Support/Factory/settings.json";
+  if (platform === "win32") return "C:\\Program Files\\Factory\\settings.json";
+  return "/etc/factory/settings.json";
+}
+function droidFlags({ home, cwd, systemFiles }) {
+  const flags = {};
+  const files = [["user", join(home, ".factory", "settings.json")], ["user", join(home, ".factory", "settings.local.json")]];
+  if (cwd) files.push(["project", join(cwd, ".factory", "settings.json")], ["local", join(cwd, ".factory", "settings.local.json")]);
+  const sys = systemFiles.droid ?? droidSystemFile();
+  files.push(["system", sys]);
+  for (const [scope, f] of files) {
+    const d = readJson(f).data;
+    if (!d || typeof d !== "object") continue;
+    if (d.hooksDisabled === true) add(flags, "hooksDisabled", scope);
+    // MoorAI deployed among the org's own hooks still runs; a user-level install does not.
+    if (f === sys && d.allowManagedHooksOnly === true && !/moorai-agent-hook\.mjs\\?["']?\s+droid/.test(JSON.stringify(d.hooks || {}))) add(flags, "managedHooksOnly", "managed");
+  }
+  return flags;
+}
+
+const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: geminiFlags, cursor: cursorFlags, droid: droidFlags };
 
 // The whole posture. `caller` is the host whose hook is asking (always reported: it is running), and
 // `permissionMode` that hook's permission_mode (Claude Code only).
@@ -262,10 +296,12 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
 // written here; the result carries commit(failed), which the caller runs after posting, with the alerts
 // that did not reach the console, so a lost post is raised again on the next scan instead of being forgotten.
 // procs: the process readers aiApiCallers uses ({ exeOf, argvOf, sigOf }); the OS's own by default.
-// → { fields: { localModelServers, aiApiCallers, decoyKeys }, alerts: [alert without identity], notes, commit? }
+// modelScan: the static model-file scan (cli/model-scan-posture.mjs): queued downloads, and the model stores when
+// the signed policy opts in (modelScan.inventory "scan"). Adds `modelFiles` only when a scan ran.
+// → { fields: { localModelServers, aiApiCallers, decoyKeys, modelFiles? }, alerts: [alert without identity], notes, commit? }
 export const INVENTORY_STATE_FILE = "inventory-detectors.json";
 export async function inventoryPosture({ policy = null, home = os.homedir(), stateDir = join(home, ".moorai"), platform = process.platform, machineDir, write = true,
-  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, procs = {}, resolve = true, ts = new Date().toISOString() } = {}) {
+  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, procs = {}, resolve = true, ts = new Date().toISOString(), modelScan = null } = {}) {
   const notes = {};
   if (write && decoys) { try { notes.decoys = syncDecoys({ policy, home, platform }); } catch { /* best effort */ } }
   const decoyKeys = decoyPosture({ home, machineDir });
@@ -280,6 +316,15 @@ export async function inventoryPosture({ policy = null, home = os.homedir(), sta
     notes.ambiguousConnections = r.ambiguous;
   }
   const fields = { localModelServers, aiApiCallers: callerPosture(callers), decoyKeys };
+  // Loaded only when there is something to scan (a queued download, or the store scan turned on), so the
+  // daily worker pays nothing for the scanner otherwise.
+  let ms = null;
+  try {
+    let run = modelScan;
+    if (!run && write && ((policy && policy.modelScan && policy.modelScan.inventory === "scan") || existsSync(join(stateDir, "model-scan-queue.json")))) run = (await import("./model-scan-posture.mjs")).modelScanPosture;
+    if (run) ms = run({ policy, home, stateDir, platform, write, ts });
+  } catch { ms = null; }
+  if (ms) fields.modelFiles = ms.field;
   if (!write) return { fields, alerts: [], notes };
   const file = join(stateDir, INVENTORY_STATE_FILE);
   let prev = {};
@@ -296,9 +341,10 @@ export async function inventoryPosture({ policy = null, home = os.homedir(), sta
       writeFileSync(tmp, JSON.stringify({ exposed, callers: seen }), { mode: 0o600 });
       renameSync(tmp, file);
     } catch { /* a lost state file costs one repeated alert */ }
+    if (ms) { try { ms.commit(failed); } catch { /* one rescan, one repeated alert */ } }
   };
   if (commit) save();
-  return { fields, alerts: [...ex.alerts, ...ca.alerts], notes, ...(commit ? {} : { commit: save }) };
+  return { fields, alerts: [...ex.alerts, ...ca.alerts, ...(ms ? ms.alerts : [])], notes, ...(commit ? {} : { commit: save }) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

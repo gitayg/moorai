@@ -18,6 +18,11 @@ import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.m
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
+import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
+import { oversharingAlertFields } from "../cli/mcp-outbound.mjs";
+import { RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
+import { toolClassAlert } from "../cli/mcp-tool-class.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
 import { traceFields } from "../model-proxy/trace-w3c.mjs";
@@ -47,16 +52,23 @@ const TRACE = new AsyncLocalStorage();
 // Runs fn with the request's span (createTracer's result) as the trace every post() under it reads.
 export function withTrace(trace, fn) { return TRACE.run(trace, fn); }
 
+// The request's agent session identity (./identity.mjs): { id?, status, agentName? }, set once the header is
+// judged; every console alert raised under the request after that carries it as `agentSession`.
+const AGENT_SESSION = new AsyncLocalStorage();
+export function withAgentSession(fn) { return AGENT_SESSION.run({ record: null }, fn); }
+export function setAgentSession(record) { const h = AGENT_SESSION.getStore(); if (h) h.record = record; }
+
 export function post(raw) {
   const alert = { ...traceFields(TRACE.getStore()), ...raw };
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
   if (!isEnrolled(CONFIG)) return;
   const session = SESSION.getStore();
+  const as = AGENT_SESSION.getStore();
   try {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) },
-      body: JSON.stringify({ ...alert, ...(session && alert.session === undefined ? { session } : {}), ...(WORKLOAD ? { workload: WORKLOAD } : {}) }),
+      body: JSON.stringify({ ...alert, ...(session && alert.session === undefined ? { session } : {}), ...(as && as.record && alert.agentSession === undefined ? { agentSession: as.record } : {}), ...(WORKLOAD ? { workload: WORKLOAD } : {}) }),
       signal: AbortSignal.timeout(1500)
     }).catch(() => {});
   } catch { /* never let a network error touch the request path */ }
@@ -96,13 +108,13 @@ export function auditCall(server, tool, decision, argsHash) {
 
 export function alertBlock(server, tool, gate, argsHash) {
   const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "egress" ? "MCP: local secret egress" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
-  post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY });
+  post({ threatId: gate === "server" ? 25 : 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY });
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
 }
 
 export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...oversharingAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
     }
@@ -110,12 +122,13 @@ export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
 }
 
 // #65 — only the one-way hashes of the matched local secrets leave, as in the hook.
-export function alertEgress(server, tool, hits, blocked) {
-  post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
+// `matches` (optional): [{ hash, encoding, source }] from cli/secret-egress.mjs egressMatches.
+export function alertEgress(server, tool, hits, blocked, matches) {
+  post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...(matches ? { secretEgress: matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })) } : {}), ...IDENTITY });
 }
 
-export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode }) {
-  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, ...(reasonCode ? { reasonCode } : {}), mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
+export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode, driftCheck }) {
+  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, ...(reasonCode ? { reasonCode } : {}), ...(driftCheck ? { driftCheck } : {}), mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
   post(a);
   if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
     try { post({ ...literacyTouchpoint({ threatId, category, tool: t(toolName) }), ...IDENTITY }); } catch { /* evidence */ }
@@ -125,7 +138,7 @@ export function alertTool(server, toolName, { category, riskLevel, threatId = 0,
 
 export function alertResult(server, toolName, findings, blocked) {
   for (const f of findings || []) {
-    const a = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "result", tool: t(toolName), decision: blocked ? "deny" : "notify", mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...IDENTITY };
+    const a = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "result", tool: t(toolName), decision: blocked ? "deny" : "notify", mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...IDENTITY };
     post(a);
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(toolName) }), ...IDENTITY }); } catch { /* evidence */ }
@@ -135,9 +148,27 @@ export function alertResult(server, toolName, findings, blocked) {
 }
 
 // A tools/call refused because block-mode tool drift quarantined the tool (mcp-proxy/tool-drift.mjs).
-export function alertDriftCall(server, tool, category, argsHash) {
-  const a = { threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
+// `rechecked`: the verdict came from a re-list the gateway made before the call (driftCheck "recheck").
+export function alertDriftCall(server, tool, category, argsHash, rechecked = false) {
+  const a = { threatId: RUG_PULL_THREAT, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", ...(rechecked ? { driftCheck: "recheck" } : {}), mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
   post(a);
+  ledger(a);
+}
+
+// The re-list before a block-mode tools/call failed or ran out of time, and the fail mode is open: the
+// call goes on to the rest of the gate (mcp-proxy/tool-recheck.mjs). Content-free: the cause only.
+export function alertRecheckFailed(server, tool, why, argsHash) {
+  const w = why === "timeout" ? "timeout" : "error";
+  const a = { threatId: 0, category: "MCP: tool list re-check failed", riskLevel: "Medium", stage: "mcp", tool: t(tool), decision: "allow", reasonCode: "MCP_TOOL_DRIFT", driftCheck: "recheck", failMode: "open", failWhy: w, mcpServer: server, ts: now(), contentHash: `mcp:tool:recheck-failed:${w}`, ...IDENTITY };
+  post(a);
+  ledger(a);
+}
+
+// A call the class default (policy mcpToolClassDefaults) decided. `decision`: what the call finally got.
+export function alertToolClass(server, tool, tc, decision) {
+  const a = { ...toolClassAlert(tc, { tool, server, toolPrefix: "gateway", decision }), ts: now(), ...IDENTITY };
+  post(a);
+  if (decision === "deny") { try { post({ ...literacyTouchpoint({ threatId: 0, category: a.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ } }
   ledger(a);
 }
 

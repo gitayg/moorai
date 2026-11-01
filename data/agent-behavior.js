@@ -1,7 +1,7 @@
 // Autonomous-agent-behavior signature (the "is this an agent gone rogue?" analyzer).
 //
 // Encodes the 8 behavioral tells the Hugging Face team used to conclude their July 2026 incident was
-// a FULLY AUTONOMOUS attack, as documented in the CSA/SANS/[un]prompted/RSAC/Knostic/FIRST community
+// a FULLY AUTONOMOUS attack, as documented in the CSA/SANS/[un]prompted/RSAC/FIRST community
 // post-mortem ("Hugging Face Incident Initial Post-Mortem", §IV Observations). Two layers:
 //
 //   contentTells(text)        — per-event text heuristics (#5 benchmark strings, #6 hallucinated/
@@ -172,7 +172,7 @@ export function assessCrossServerTrifecta(events) {
 
 // Derive the three content-free trifecta legs for a single tool call from what the hook already knows:
 // the tool name, the stage, and the finding classes (threat ids) — no prompt/file content required.
-const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55]); // secrets, PII, PHI, source/IP, cards
+const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55, 90]); // secrets, PII, PHI, source/IP, cards
 const UNTRUSTED_THREATS = new Set([3, 40, 50]);                 // injection, indirect/RAG, invisible text
 const CALLOUT_THREATS = new Set([2, 47, 54, 56, 57]);           // exfil, external comms, reverse shell, MCP-destructive, install
 export function trifectaLegs(tool, stage, findings, flags) {

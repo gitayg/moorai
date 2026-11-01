@@ -142,6 +142,10 @@ function withBudget(p, ms, phase) {
   ]);
 }
 
+// A prompt-stage sample is a turn of prose, scanned as the model proxy, the hook and the agent SDK scan a
+// user turn (ctx.prose, read by #43's gate in data/destructive-mention.js). Other stages carry no context.
+export const sampleCtx = (stage) => (stage === "prompt" ? { prose: true } : undefined);
+
 // Run one labelled sample and reduce it to a content-free verdict row. `scan` is the deterministic
 // scanner: (text, stage) -> Promise<findings[]> | findings[]. Exported + injectable so the test can drive
 // it with a stub engine.
@@ -414,6 +418,9 @@ export function toText(sc, rows, verbose, semantic, splits, postureLabel = "buil
 // provider call unless explicitly opted in via MOORAI_EVAL_SEMANTIC_MODE=provider.
 async function buildEscalator(semantic) {
   if (!semantic) return null;
+  // Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+  // answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+  if (!process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
   const { escalateMiss } = await import("../src/semantic.js");
   const { crescendoTrajectory } = await import("../data/crescendo.js");
   const mode = process.env.MOORAI_EVAL_SEMANTIC_MODE === "provider" ? "provider" : "local";
@@ -473,7 +480,7 @@ async function main() {
   const samples = [...baseSamples, ...heldoutSamples, ...benignSamples];
 
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
-  const scan = (text, stage) => engine.scan(text, stage);
+  const scan = (text, stage) => engine.scan(text, stage, sampleCtx(stage));
   const escalate = await buildEscalator(args.semantic);
 
   const rows = [];

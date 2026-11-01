@@ -19,7 +19,8 @@
 //               can reach it cannot be measured from this device.
 //   alert       LOCAL_MODEL_EXPOSED (Medium) for a server with viaProxy false, unless the signed policy says
 //               localModelExposure "off". Once per change: the set of exposed runtime|port|bind is kept
-//               and only an entry not in the previous scan's set alerts.
+//               and only an entry not in the previous scan's set alerts. threatId 89 (data/threats.json,
+//               "Local model server reachable without MoorAI"), the way model-scan alerts carry #76.
 // Content-free: runtime id, port, bind class, a boolean. Never an address, a pid, a path or a model name.
 import { connect as netConnect } from "node:net";
 import { LOCAL_AI_RUNTIMES, matches, bindClass } from "./local-ai-inventory.mjs";
@@ -27,6 +28,7 @@ import { normName } from "./listen-sockets.mjs";
 
 export const EXPOSURE_REASON = "LOCAL_MODEL_EXPOSED";
 export const EXPOSURE_CATEGORY = "Local model server reachable without MoorAI";
+export const EXPOSURE_THREAT = 89;
 const CONTRACT_RUNTIME = { ollama: "ollama", lmstudio: "lmstudio", "llama.cpp": "llamacpp", vllm: "vllm" };
 const WIDTH = { loopback: 0, lan: 1, "all-interfaces": 2 };
 
@@ -81,7 +83,7 @@ export function exposureAlerts(servers, { policy = null, prev = [], ts = new Dat
   const exposed = (servers || []).filter((s) => !s.viaProxy);
   const before = new Set(Array.isArray(prev) ? prev : []);
   const alerts = exposed.filter((s) => !before.has(exposureKey(s))).map((s) => ({
-    threatId: 0, reasonCode: EXPOSURE_REASON, category: EXPOSURE_CATEGORY, riskLevel: "Medium", stage: "inventory", tool: "inventory:local-model",
+    threatId: EXPOSURE_THREAT, reasonCode: EXPOSURE_REASON, category: EXPOSURE_CATEGORY, riskLevel: "Medium", stage: "inventory", tool: "inventory:local-model",
     ts, contentHash: `local-model:${exposureKey(s)}`, runtime: s.runtime, port: s.port, bind: s.bind
   }));
   return { alerts, next: exposed.map(exposureKey).sort() };

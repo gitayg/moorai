@@ -139,7 +139,7 @@ test("BOTH ERAS: 2026-07-28 requests (_meta, mirrored headers) and results (resu
     const r = await rpc(base, msg, { "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "book" });
     assert.equal(r.text, MRTR({ id: 1 }));
     assert.equal(up.calls().length, 1);
-    const d = await rpc(base, { jsonrpc: "2.0", id: 2, method: "server/discover", params: { _meta: { [PV]: "2026-07-28" } } }, { "MCP-Protocol-Version": "2026-07-28" });
+    const d = await rpc(base, { jsonrpc: "2.0", id: 2, method: "server/discover", params: { _meta: { [PV]: "2026-07-28" } } }, { "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover" });
     assert.equal(d.status, 200);
     await settle();
     assert.equal(schemaAlerts(con).length, 0, JSON.stringify(schemaAlerts(con)));

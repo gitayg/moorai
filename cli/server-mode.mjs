@@ -58,8 +58,21 @@ export const ENV = {
   tenant: "MOORAI_TENANT",
   installToken: "MOORAI_INSTALL_TOKEN",
   serviceId: "MOORAI_SERVICE_ID",
-  headlessAsk: "MOORAI_HEADLESS_ASK"
+  headlessAsk: "MOORAI_HEADLESS_ASK",
+  workloadId: "MOORAI_WORKLOAD_ID",
+  oidc: "MOORAI_OIDC",
+  cloudHost: "MOORAI_CLOUD_HOST"
 };
+// Cloud coding agents (CONTRACT-F28 §5). A cloud host runs MoorAI in server mode from its environment-setup
+// step (cli/moorai-cloud-setup.mjs, examples/cloud/). The workload id selects the console's workload record;
+// MOORAI_OIDC=github means the setup step exchanges a GitHub Actions OIDC ID token for a scoped workload
+// token (cli/workload-token.mjs). All three are MOORAI_* names, so a settings file's `env` block setting one
+// is refused like the rest.
+export const CLOUD_HOSTS = Object.freeze(["copilot-coding-agent", "codex-cloud", "claude-code-web", "ci", "other"]);
+export const WORKLOAD_ATTESTATIONS = Object.freeze(["github-oidc", "static-token"]);
+export const OIDC_PROVIDERS = Object.freeze(["github"]);
+export const WORKLOAD_ID_RE = /^wkl-[0-9a-f]{12}$/;
+export const WORKLOAD_TOKEN_RE = /^mwt_[A-Za-z0-9_-]{43}$/;
 // GitHub Actions default variables used for the fallback workload name. From GitHub's reference
 // (docs.github.com/en/actions/reference/workflows-and-actions/variables): GITHUB_ACTIONS "Always set to
 // `true` when GitHub Actions is running the workflow"; GITHUB_REPOSITORY "The owner and repository name";
@@ -248,6 +261,19 @@ export function resolveServerMode({ env = process.env, system = null, user = nul
     serviceIdSource = gh ? "github-actions" : "unnamed";
   }
 
+  // Cloud agent fields. workloadId: system > env. oidc: system > env, and only with a workload id. cloudHost:
+  // system > env > detected: Claude Code's cloud sessions carry CLAUDE_CODE_REMOTE=true ("the session VM's
+  // environment carries that variable as `true`, it's never `true` locally", code.claude.com/docs/en/
+  // cloud-environments). That variable is not a MOORAI_* name, so a settings file can set it; it only labels
+  // the heartbeat and decides nothing. The attestation is read from the root-owned file only: the setup step
+  // records "github-oidc" there next to the token it minted; any other token in force reads "static-token".
+  const workloadId = pick("workloadId", ENV.workloadId, (v) => (WORKLOAD_ID_RE.test(v) ? v : ""));
+  const oidcRaw = pick("oidc", ENV.oidc, (v) => (OIDC_PROVIDERS.includes(v.toLowerCase()) ? v.toLowerCase() : ""));
+  const oidc = workloadId ? oidcRaw : "";
+  let cloudHost = pick("cloudHost", ENV.cloudHost, (v) => (CLOUD_HOSTS.includes(v) ? v : ""));
+  if (!cloudHost && clean(env.CLAUDE_CODE_REMOTE) === "true") { cloudHost = "claude-code-web"; sources.cloudHost = "detected"; }
+  const attestation = sys.workloadAttestation === "github-oidc" && sources.installToken === "system" && WORKLOAD_TOKEN_RE.test(installToken) ? "github-oidc" : "static-token";
+
   const sysAsk = HEADLESS_MODES.includes(sys.headlessAsk) ? sys.headlessAsk : "";
   const envAsk = envVal(ENV.headlessAsk).toLowerCase();
   const headless = { system: sysAsk, envDeny: envAsk === "deny", envRefused: envAsk !== "" && envAsk !== "deny" };
@@ -260,9 +286,20 @@ export function resolveServerMode({ env = process.env, system = null, user = nul
     serviceId,
     serviceIdSource,
     headless,
+    workloadId,
+    oidc,
+    cloudHost,
+    attestation,
     tamper,
     refused: [...refusedNames].sort()
   };
+}
+
+// The heartbeat's top-level `cloudAgent` field (CONTRACT-F28 §5.2): { host, attestation } for a cloud
+// agent in server mode, null otherwise. Old consoles ignore the field.
+export function cloudAgentPosture(sm) {
+  if (!sm || !sm.active || !CLOUD_HOSTS.includes(sm.cloudHost)) return null;
+  return { host: sm.cloudHost, attestation: WORKLOAD_ATTESTATIONS.includes(sm.attestation) ? sm.attestation : "static-token" };
 }
 
 // The one call the process makes, memoised: loadConfig() and the hook both ask, and it must not change
@@ -321,6 +358,16 @@ export function settleHeadlessAsk(sm, policy, { decision, reason, tool = "", per
     reason: `denied ${rest ? `${rest} — ` : ""}${HEADLESS_NOTE}. Do not retry; an operator can allow it in the MoorAI policy`,
     alert: { ...base, category: "Headless approval denied (no approver)", riskLevel: "Blocked", contentHash: "headless-ask:deny" }
   };
+}
+
+// A host that has no approver even outside server mode (the MCP gateway answers an MCP client, not a
+// person): an "ask" it forwarded would simply run. Settled like a headless ask — deny, unless policy
+// headlessAsk is "allow-with-report" — with its own note. In server mode, settleHeadlessAsk as is.
+export const NO_APPROVER_NOTE = "held for approval, but this host has no approver to ask";
+export function settleNoApproverAsk(sm, policy, args) {
+  if (sm && sm.active) return settleHeadlessAsk(sm, policy, args);
+  const r = settleHeadlessAsk({ active: true, headless: { envDeny: false, system: "" } }, policy, args);
+  return r.decision === "deny" ? { ...r, reason: r.reason.replace(HEADLESS_NOTE, NO_APPROVER_NOTE) } : r;
 }
 
 // Claude Code's bypass mode (--dangerously-skip-permissions, permission_mode "bypassPermissions") skips

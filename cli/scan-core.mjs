@@ -18,7 +18,7 @@ import { readFileSync, readdirSync, statSync, lstatSync } from "node:fs";
 import { join, relative, basename, dirname } from "node:path";
 import { buildEngine, decideText, threatActionFor } from "./hook-core.mjs";
 import { skillIntents } from "./skill-analysis.mjs";
-import { contentHash } from "./content-hash.mjs";
+import { spanHash } from "./span-hash.mjs";
 import { skillSurfaceKind } from "../data/skill-surface.js";
 
 // Worst-first order. The overall verdict is the WORST across every scanned file.
@@ -92,7 +92,7 @@ function mergeFindings(a, b) {
 // detectors too, per DetectionEngine._wantStages) and, for a JSON config, additionally at stage "tool"
 // over the extracted descriptor strings. Returns the content-free findings + the file verdict.
 export function scanFileText({ engine, policy, text, relativePath, surfaceKind }) {
-  const fileDec = decideText(engine, policy, text, "file");
+  const fileDec = decideText(engine, policy, text, "file", { ctx: { readPath: relativePath } });
   let decision = fileDec.decision;
   let raw = fileDec.findings;
 
@@ -103,14 +103,14 @@ export function scanFileText({ engine, policy, text, relativePath, surfaceKind }
     raw = mergeFindings(raw, toolDec.findings);
   }
 
-  const intentLabels = skillIntents(text, raw);
+  const intentLabels = skillIntents(text, raw, { readPath: relativePath });
   const findings = raw.map((f) => ({
     relativePath,
     surfaceKind,
     threatId: f.threatId,
     category: f.category,
     intentLabels,
-    contentHash: contentHash(f.match),   // hashed, never the span itself; NO_KEY when unenrolled
+    contentHash: spanHash(f.threatId, f.match),   // hashed, never the span itself; NO_KEY when unenrolled
     tier: tierOf(threatActionFor(policy, f.threatId))
   }));
 

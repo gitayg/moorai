@@ -1,0 +1,27 @@
+#!/bin/sh
+# pkg postinstall: enforce ownership and modes (contract §4.1, §4.2, §4.3), then bootstrap the daemon.
+# Installer runs this as root against the target volume ($3); a non-boot volume gets the files only.
+set -eu
+TARGET=${3:-/}
+LABEL=run.glick.moorai.guardd
+T=${TARGET%/}
+chown root:wheel "$T/Library/PrivilegedHelperTools/moorai-guardd" "$T/Library/LaunchDaemons/$LABEL.plist"
+chmod 0755 "$T/Library/PrivilegedHelperTools/moorai-guardd"
+chmod 0644 "$T/Library/LaunchDaemons/run.glick.moorai.guardd.plist"
+mkdir -p "$T/Library/Logs/MoorAI" "$T/private/etc/moorai"
+chown root:admin "$T/Library/Logs/MoorAI"
+chmod 0750 "$T/Library/Logs/MoorAI"
+touch "$T/Library/Logs/MoorAI/guardd.log"
+chown root:admin "$T/Library/Logs/MoorAI/guardd.log"
+chmod 0640 "$T/Library/Logs/MoorAI/guardd.log"
+chown root:wheel "$T/private/etc/moorai"
+chmod 0755 "$T/private/etc/moorai"
+if [ -e "$T/private/etc/moorai/secret.json" ]; then
+  chown root:wheel "$T/private/etc/moorai/secret.json"
+  chmod 0600 "$T/private/etc/moorai/secret.json"
+fi
+[ "$T" = "" ] || exit 0
+launchctl bootstrap system "/Library/LaunchDaemons/$LABEL.plist"
+launchctl enable "system/$LABEL"
+launchctl kickstart -k "system/$LABEL"
+exit 0

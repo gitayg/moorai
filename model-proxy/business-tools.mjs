@@ -1,9 +1,12 @@
 // The built-in business-impact catalogue: a function the model asks a function-calling client to run is
 // classed by its NAME (never its arguments) into the impact classes below. A class's built-in action is
-// "alert" (reported, never blocked), so the shipped default changes no traffic; a signed policy raises or
-// silences a class:
+// "alert" (reported, never blocked), so the shipped default changes no traffic, except detokenize, whose
+// built-in action is "ask"; a signed policy raises or silences a class:
 //
-//   "businessToolActions": { "money": "block", "bulk-data": "ask", "identity": "ask", "destructive": "alert", "delegation": "allow" }
+//   "businessToolActions": { "money": "block", "bulk-data": "ask", "identity": "ask", "destructive": "alert", "delegation": "allow", "detokenize": "allow" }
+//
+// detokenize takes its action from businessToolActions.detokenize, else from the MCP class default
+// mcpToolClassDefaults.detokenize (allow / ask / block, ../cli/mcp-tool-class.mjs), else the built-in "ask".
 //
 // Vocabulary as functionToolActions': allow | alert | ask | block (anything else, or a class not listed,
 // keeps the built-in alert). A functionToolActions key that names the function itself — an exact name, or a
@@ -17,6 +20,9 @@
 //                suspend, impersonation
 //   destructive  delete, purge, wipe, destroy, truncate, erase; drop of a table / database / collection
 //   delegation   handoffs, fan-out, spawning or delegating to other agents (transfer_to_<agent> included)
+//   detokenize   detokenize, decrypt, unseal, unmask, de-anonymize, a secret or vault read of a value, a card
+//                number read: the MCP detokenize names (../cli/mcp-tool-class.mjs detokenizeName), read
+//                verbs included (reading the value is the impact)
 //
 // MATCHING. The name is normalized as function-rules.mjs does (normalizeName: NFKC, invisible characters and
 // a `functions.` / `default_api.` prefix removed), camelCase is split, and the result is lower-cased and cut
@@ -27,8 +33,9 @@
 // details …) is a lookup and is not classed, except for bulk-data, where reading everything is the impact
 // (get_all_users) — a read-noun ending still excludes it (get_export_status).
 import { normalizeName } from "./function-rules.mjs";
+import { detokenizeName } from "../cli/mcp-tool-class.mjs";
 
-export const BUSINESS_CLASSES = Object.freeze(["money", "bulk-data", "identity", "destructive", "delegation"]);
+export const BUSINESS_CLASSES = Object.freeze(["money", "bulk-data", "identity", "destructive", "delegation", "detokenize"]);
 const ACTIONS = new Set(["allow", "alert", "ask", "block"]);
 const RANK = { allow: 0, alert: 1, ask: 2, block: 3 };
 const S = (...w) => new Set(w);
@@ -80,16 +87,21 @@ export function classifyBusinessTool(name) {
   if (!read && (any(w, ID_ACTION) || seq(w, "login", "as") || pair(w, ROLE_VERB, ROLE_OBJECT) || pair(w, CRED_VERB, CRED_OBJECT) || pair(w, ACCOUNT_VERB, ACCOUNT_OBJECT))) out.push("identity");
   if (!read && (any(w, DESTROY_ACTION) || (w.includes("drop") && any(w, DROP_OBJECT)))) out.push("destructive");
   if (!read && (any(w, DELEGATE_ACTION) || seq(w, "hand", "off") || seq(w, "fan", "out") || (w[0] === "transfer" && w[1] === "to") || pair(w, AGENT_VERB, AGENT_OBJECT))) out.push("delegation");
+  if (detokenizeName(w.join("_"))) out.push("detokenize");
   return out;
 }
 
-// { money, "bulk-data", identity, destructive, delegation } → action, the policy's where it gives a valid one.
+// { money, "bulk-data", identity, destructive, delegation, detokenize } → action, the policy's where it gives a valid one.
 const cache = new WeakMap();
 export function businessToolActionsFrom(policy) {
   if (policy && typeof policy === "object" && cache.has(policy)) return cache.get(policy);
   const m = policy && typeof policy === "object" ? policy.businessToolActions : undefined;
   const ok = m && typeof m === "object" && !Array.isArray(m);
   const out = Object.fromEntries(BUSINESS_CLASSES.map((c) => [c, ok && ACTIONS.has(m[c]) ? m[c] : "alert"]));
+  if (!(ok && ACTIONS.has(m.detokenize))) {
+    const d = policy && typeof policy === "object" && policy.mcpToolClassDefaults;
+    out.detokenize = d && typeof d === "object" && !Array.isArray(d) && ["allow", "ask", "block"].includes(d.detokenize) ? d.detokenize : "ask";
+  }
   if (policy && typeof policy === "object") cache.set(policy, out);
   return out;
 }

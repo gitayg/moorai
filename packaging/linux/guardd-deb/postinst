@@ -1,0 +1,20 @@
+#!/bin/sh
+# moorai-guardd postinst: enforce the admin-input modes the helper requires (contract §4.1), then enable
+# and start the socket and the service when systemd is running. In a container without systemd the
+# files are installed and nothing is started.
+set -e
+case "$1" in
+  configure)
+    install -d -m 0755 -o root -g root /etc/moorai
+    if [ -e /etc/moorai/secret.json ]; then chown root:root /etc/moorai/secret.json; chmod 0600 /etc/moorai/secret.json; fi
+    if [ -e /etc/moorai/config.json ]; then chown root:root /etc/moorai/config.json; chmod 0644 /etc/moorai/config.json; fi
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+      systemctl enable --now moorai-guardd.socket moorai-guardd.service
+      systemctl restart moorai-guardd.service || true
+    else
+      echo "moorai-guardd: systemd is not running here; installed but not started." >&2
+    fi
+    ;;
+esac
+exit 0

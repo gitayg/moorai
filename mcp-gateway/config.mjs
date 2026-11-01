@@ -16,7 +16,7 @@ export const DEFAULT_PORT = 8848;
 export const TOKEN_HEADER = "x-moorai-gateway-token";
 export const MIN_TOKEN_LEN = 16;
 // Request headers never forwarded upstream (server.mjs strips them); a placeholder binding may not name one.
-export const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
+export const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-agent-identity"]);
 // C5 hardening defaults. 4 MiB: four times the 1 MB the result scan reads (CAPS.maxLineBytes), so every
 // response the scan can cover — and the next tier, forwarded unscanned as before — still passes; past it
 // a response is refused rather than relayed. 0 turns the cap off.

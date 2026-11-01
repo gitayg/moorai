@@ -21,6 +21,8 @@ export const REASON = Object.freeze({
   ENVELOPE: "ENVELOPE",                           // entitlement drift (#64)
   PROFILE_DRIFT: "PROFILE_DRIFT",                 // a declared workload/repo profile (policy.workloadProfiles) was left
   EGRESS_RULE: "EGRESS_RULE",                     // an egress rule or egressDefault (policy / profile egressRules) alerted or blocked
+  BOUNDARY_UNMODELLED: "BOUNDARY_UNMODELLED",     // #85: a trust-boundary change in the turn and no threat-model update (cli/boundary-stop.mjs)
+  BOUNDARY_MODEL_INVALID: "BOUNDARY_MODEL_INVALID", // #85: threatcl validate rejected a threat-model file the session wrote (cli/boundary-model.mjs)
   JIT_ELEVATION: "JIT_ELEVATION",
   ENDPOINT_NOT_ALLOWED: "ENDPOINT_NOT_ALLOWED",   // model-endpoint allow-list (#63)
   SECRET_EGRESS: "SECRET_EGRESS",                 // local secret value egress (#65)
@@ -40,6 +42,7 @@ export const REASON = Object.freeze({
   BINDING_REFUSED: "BINDING_REFUSED",             // a user config.json disagreed with the admin (root-owned) binding and was refused
   POLICY_STALE: "POLICY_STALE",                   // the enforced policy's signed iat is older than the maximum age (ageMinutes)
   BEHAVIOR_SIGNAL: "BEHAVIOR_SIGNAL",             // session-level behaviour (trifecta, autonomy, clipboard, drift)
+  CASCADE_LIMIT: "CASCADE_LIMIT",                 // policy.cascadeLimits: sub-agent spawn rate or depth, a call that keeps failing, a session held after repeated denials (data/cascade-limits.js)
   HONEYTOKEN: "HONEYTOKEN",
   SKILL_FILE: "SKILL_FILE",
   MODEL_ESCALATION: "MODEL_ESCALATION",
@@ -51,10 +54,23 @@ export const REASON = Object.freeze({
   RESPONSE_TOO_LARGE: "RESPONSE_TOO_LARGE",       // MCP gateway: an upstream response exceeded the configured cap (limitBytes)
   CLIENT_COOLDOWN: "CLIENT_COOLDOWN",             // MCP gateway: a client in a cool-down after repeated refusals (cooldownSeconds)
   MCP_TOOL_DRIFT: "MCP_TOOL_DRIFT",               // policy mcpToolDrift "block": a tool changed / was added / shadows since approval (mcp-proxy/tool-drift.mjs)
+  MCP_TOOL_CLASS: "MCP_TOOL_CLASS",               // policy mcpToolClassDefaults: the tool's class (read / write / destructive / unknown) decided ask or block (cli/mcp-tool-class.mjs)
+  MCP_PACKAGE_POLICY: "MCP_PACKAGE_POLICY",       // policy mcpPackagePolicy: an MCP server package unpinned, off the org's pin, failing a critical check, or a known-compromised release (cli/mcp-package-policy.mjs)
+  PACKAGE_KNOWN_BAD: "PACKAGE_KNOWN_BAD",         // a known-compromised package release installed or run (cli/package-known-bad.mjs; shipped list plus knownBadPackages)
+  MCP_OAUTH: "MCP_OAUTH",                         // MCP gateway, policy mcpOAuth: a bearer token's audience / issuer / scope / reuse, a challenge's scope, or an authorization server's metadata (oauthCheck; mcp-gateway/oauth-gate.mjs)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
   FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
   CONTAINMENT_MISSING: "CONTAINMENT_MISSING",     // containmentRequired (Windows): an agent that can run its commands in MXC is not set to (cli/containment-enforce.mjs)
   CONTAINMENT_UNAVAILABLE: "CONTAINMENT_UNAVAILABLE", // containment is required but MXC cannot be used here: build not capable, wxc-exec missing, wrap impossible
+  ASK_OUTCOME: "ASK_OUTCOME",                     // what became of a call MoorAI asked on: ran, failed, did not run, or cannot be followed (cli/ask-outcome.mjs)
+  OUTBOX_DROPPED: "OUTBOX_DROPPED",               // the alert outbox dropped entries before delivery (full, aged, rejected, oversize; cli/alert-outbox.mjs)
+  OVERSIGHT_WEAKENED: "OVERSIGHT_WEAKENED",       // #84: a tool call weakens the project's own monitoring, alerting, audit logging or safety tests (cli/oversight-signals.mjs)
+  OVERSIGHT_UNDISCLOSED: "OVERSIGHT_UNDISCLOSED", // #84: an allowed oversight change the agent's final message does not state (cli/oversight-disclosure.mjs, heuristic)
+  RECEIPT_KEY_INJECTED: "RECEIPT_KEY_INJECTED",   // an MCP call's input carries the reserved _moorai key on a host that cannot rewrite input (cli/receipt-step.mjs)
+  FILE_SCAN: "FILE_SCAN",                         // a cloud file-scanning provider's verdict on a file sent to a model (cli/file-scan.mjs): malicious, unknown or not scanned
+  ORIGIN_TAINT: "ORIGIN_TAINT",                   // origin taint: a gated action after the session read an outside-origin file, or an origin mark removed (data/origin-taint.js)
+  QUARANTINE_READ: "QUARANTINE_READ",             // fileQuarantine: an outside-origin read replaced by the quarantined reader's summary, withheld, refused for want of a reader, or put to the user (cli/quarantine-step.mjs)
+  AGENT_IDENTITY: "AGENT_IDENTITY",               // an agent session identity (X-MoorAI-Agent-Identity) absent under require, expired, invalid, foreign or revoked (cli/agent-session-identity.mjs)
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -112,17 +128,26 @@ const CATEGORY_REASON = [
   [/^(Policy signature rejected|Policy key pin|Offline posture|Break-glass marker rejected|Policy: environment set|Server-mode configuration refused)/, REASON.POLICY_TAMPER],
   [/^(Autonomous-agent behavior|Lethal trifecta exposure|Clipboard read then outbound upload|Cross-server toxic flow|Agent behavior: |Agent drift: )/, REASON.BEHAVIOR_SIGNAL],
   [/^Agent destination: /, REASON.DESTINATION],
+  [/^Cascade limit: /, REASON.CASCADE_LIMIT],
   [/^Honeytoken canary triggered$/, REASON.HONEYTOKEN],
+  [/^Trust boundary changed without a threat-model update$/, REASON.BOUNDARY_UNMODELLED],
+  [/^Threat model failed validation$/, REASON.BOUNDARY_MODEL_INVALID],
   [/^Skill-file /, REASON.SKILL_FILE],
   [/^(Model-flagged: |Escalation outcome)/, REASON.MODEL_ESCALATION],
   [/^Literacy: /, REASON.LITERACY],
+  [/^Weakening oversight$/, REASON.OVERSIGHT_WEAKENED],
+  [/^Undisclosed oversight change$/, REASON.OVERSIGHT_UNDISCLOSED],
   [/^Content: /, REASON.CONTENT_RULE],
   [/^MCP gateway: invalid message$/, REASON.SCHEMA_INVALID],
   [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
   [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
-  [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing)$/, REASON.MCP_TOOL_DRIFT],
+  [/^MCP gateway: (OAuth |bearer token reused)/, REASON.MCP_OAUTH],
+  [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing|tool list re-check failed)$/, REASON.MCP_TOOL_DRIFT],
   [/^MCP tool call$/, REASON.NO_MATCH],
   [/^Fail-closed: /, REASON.FAIL_CLOSED],
+  [/^File scan: /, REASON.FILE_SCAN],
+  [/^Origin taint: /, REASON.ORIGIN_TAINT],
+  [/^Quarantined read$/, REASON.QUARANTINE_READ],
   [/^Containment: agent commands not in MXC$/, REASON.CONTAINMENT_MISSING],
   [/^Containment: MXC unavailable$/, REASON.CONTAINMENT_UNAVAILABLE],
   [/^Containment: (agent launched wxc-exec|write to a protected location)$/, REASON.POLICY_TAMPER]

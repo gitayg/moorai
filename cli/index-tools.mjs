@@ -24,7 +24,13 @@
 //      update / create writes are in BUILTIN.
 // A miss is not a gap in safety: every tools/call argument is still scanned by mcpGateway at the prompt
 // stage. A match ADDS the index-stage detectors and the policy.indexScanAction rule on top.
-import { decideIndexChunk } from "./index-scan.mjs";
+//
+// PROVENANCE. A tools/call's arguments are written by the model, so they cannot say who authored the
+// documents (a model told to call it "trusted" would). The org states it instead:
+// policy.indexProvenance.mcpWriteTrust ("trusted" | "untrusted" | "unknown"; unset = not checked, as
+// before) is the author trust of every MCP vector-store write, judged by cli/index-scan.mjs's provenance
+// check. Its "hold" verdict (untrustedClaims "ask") is the guards' "ask".
+import { decideIndexChunk, TRUST_LEVELS } from "./index-scan.mjs";
 
 const WRITE = new Set(["add", "upsert", "insert", "index", "store", "ingest", "embed", "remember", "save"]);
 // A name that also says it reads, lists or deletes (get_index_stats, delete_documents) is not a write.
@@ -98,6 +104,8 @@ export function indexWriteScan(engine, policy, { tool, server, args } = {}) {
     if (!engine) return null;
     const m = indexToolMatch({ tool, server, args, policy });
     if (!m.match) return null;
-    return { ...decideIndexChunk(engine, policy, args == null ? {} : args), via: m.via };
+    const p = policy && policy.indexProvenance;
+    const trust = p && typeof p === "object" && TRUST_LEVELS.includes(p.mcpWriteTrust) ? p.mcpWriteTrust : null;
+    return { ...decideIndexChunk(engine, policy, args == null ? {} : args, trust ? { source: { trust, kind: "mcp" } } : {}), via: m.via };
   } catch { return null; }
 }

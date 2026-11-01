@@ -1,138 +1,142 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-14T09:28:25.037Z
+> Generated: 2026-10-31T14:03:01.841Z
 
-- **Detectors:** 114
-- **Threats:** 80
+- **Detectors:** 128
+- **Threats:** 89
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
-- **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
-- **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
-- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 54 partial, 15 uncovered (agent lane: 2/58 covered, 53 partial, 3 uncovered)
+- **OWASP Top 10 for Agentic Applications:** 1/10 covered, 9 partial, 0 uncovered
+- **OWASP MCP Top 10:** 1/10 covered, 8 partial, 1 uncovered
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 56 partial (9 bounded by design, 47 open gap), 13 uncovered (agent lane: 2/58 covered, 54 partial (8 bounded by design, 46 open gap), 2 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
-| LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 20 | 40 | ✅ covered |
-| LLM03 | Supply Chain | 8 | 5 | ✅ covered |
-| LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
+| LLM01 | Prompt Injection | 8 | 25 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 24 | 45 | ✅ covered |
+| LLM03 | Supply Chain | 8 | 6 | ✅ covered |
+| LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
-| LLM06 | Excessive Agency | 15 | 8 | ✅ covered |
+| LLM06 | Excessive Agency | 19 | 10 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
-| LLM08 | Vector & Embedding Weaknesses | 3 | 12 | ✅ covered |
+| LLM08 | Vector & Embedding Weaknesses | 3 | 13 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
-| LLM10 | Unbounded Consumption | 2 | 1 | ✅ covered |
+| LLM10 | Unbounded Consumption | 3 | 1 | ✅ covered |
 
 ## OWASP Top 10 for Agentic Applications (2026) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
-| ASI01 | Agent Goal Hijack | 9 | 7 | 29 | ✅ covered |
-| ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
-| ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
-| ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
-| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 14 | ◐ partial |
-| ASI06 | Memory & Context Poisoning | 4 | 4 | 5 | ◐ partial |
-| ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
-| ASI08 | Cascading Failures | 0 | 0 | 0 | — |
-| ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
-| ASI10 | Rogue Agents | 1 | 1 | 0 | — |
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
+| ASI01 | Agent Goal Hijack | 9 | 7 | 33 | 2 | ✅ covered |
+| ASI02 | Tool Misuse and Exploitation | 10 | 10 | 8 | 2 | ◐ partial |
+| ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | 1 | ◐ partial |
+| ASI04 | Agentic Supply Chain Vulnerabilities | 4 | 4 | 13 | 3 | ◐ partial |
+| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | 0 | ◐ partial |
+| ASI06 | Memory & Context Poisoning | 4 | 4 | 7 | 0 | ◐ partial |
+| ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | 1 | ◐ partial |
+| ASI08 | Cascading Failures | 1 | 1 | 0 | 1 | ◐ partial |
+| ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | 0 | ◐ partial |
+| ASI10 | Rogue Agents | 3 | 3 | 2 | 3 | ◐ partial |
 
 ## OWASP MCP Top 10 (2025, beta) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
-| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 24 | ◐ partial |
-| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | ◐ partial |
-| MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
-| MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
-| MCP05 | Command Injection & Execution | 2 | 2 | 3 | ◐ partial |
-| MCP06 | Intent Flow Subversion | 8 | 6 | 20 | ✅ covered |
-| MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | — |
-| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | ◐ partial |
-| MCP09 | Shadow MCP Servers | 1 | 1 | 0 | — |
-| MCP10 | Context Injection & Over-Sharing | 0 | 0 | 0 | — |
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
+| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 28 | 0 | ◐ partial |
+| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | 1 | ◐ partial |
+| MCP03 | Tool Poisoning | 2 | 2 | 11 | 0 | ◐ partial |
+| MCP04 | Software Supply Chain Attacks & Dependency Tampering | 1 | 1 | 2 | 1 | ◐ partial |
+| MCP05 | Command Injection & Execution | 2 | 2 | 3 | 0 | ◐ partial |
+| MCP06 | Intent Flow Subversion | 8 | 6 | 24 | 3 | ✅ covered |
+| MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | 0 | — |
+| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | 0 | ◐ partial |
+| MCP09 | Shadow MCP Servers | 1 | 1 | 0 | 1 | ◐ partial |
+| MCP10 | Context Injection & Over-Sharing | 2 | 2 | 0 | 2 | ◐ partial |
 
 For the two agentic lists, **Threats** counts the rules that credit the item (`owaspAgentic` / `owaspMcp`
-in `data/threats.json`) and **Partial** how many of those credits are bounded. An item is *covered* when a
-rule crediting it in full has an on-device detector, *partial* when only bounded credits do, and *—*
-otherwise. Rules whose mechanism is not a detector in `data/detectors.js` (drift, delegation, session
-risk, the MCP allow-list) are counted under Threats but add no detectors. Sources:
+in `data/threats.json`) and **Partial** how many of those credits are bounded. A credit is backed when its
+rule has an on-device detector in `data/detectors.js`, or an enforcing mechanism declared in
+`data/mechanism-evidence.json` (the MCP server allow-list, the entitlement envelope, the delegation, oversight,
+circuit-breaker and trifecta checks, the MCP sampling and over-sharing checks, cascade limits, and the MCP
+package policy and known-compromised package list) whose source holds the named symbol and whose named tests exist in the
+unit suite with those exact titles; **Mechanisms** counts those. A declaration backs only a credit the rule
+already carries, at its level. An item is *covered* when a full credit is backed, *partial* when only bounded
+credits are, and *—* otherwise. 15 of 15 declared mechanisms are proven. Sources:
 [OWASP Top 10 for Agentic Applications](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), [OWASP MCP Top 10](https://github.com/OWASP/www-project-mcp-top-10).
 
 ## MITRE ATT&CK v20.0 coverage (AI-agent scope)
 
 | Technique | Name | Lane | Threats | Detectors | Status |
 |-----------|------|------|--------:|----------:|--------|
-| T1698 | Indirect Prompt Injection | agent | 8 | 17 | ✅ covered |
+| T1698 | Indirect Prompt Injection | agent | 8 | 22 | ✅ covered |
 | T1699 | Direct Prompt Injection | agent | 2 | 9 | ✅ covered |
-| T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial |
-| T1685.007 | Impair Autonomous Defenses | agent | 1 | 5 | ◐ partial |
-| T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial |
-| T1027.018 | Invisible Unicode | agent | 1 | 8 | ◐ partial |
-| T1195.001 | Compromise Software Dependencies and Development Tools | agent | 5 | 5 | ◐ partial |
-| T1059.001 | PowerShell | agent | 1 | 1 | ◐ partial |
-| T1059.004 | Unix Shell | agent | 1 | 1 | ◐ partial |
-| T1059.006 | Python | agent | 1 | 1 | ◐ partial |
-| T1059.013 | Container CLI/API | agent | 1 | 2 | ◐ partial |
-| T1027.010 | Command Obfuscation | agent | 1 | 8 | ◐ partial |
-| T1105 | Ingress Tool Transfer | agent | 1 | 2 | ◐ partial |
-| T1204.001 | Malicious Link | agent | 3 | 3 | ◐ partial |
-| T1204.002 | Malicious File | agent | 1 | 1 | ◐ partial |
-| T1204.004 | Malicious Copy and Paste | agent | 1 | 2 | ◐ partial |
-| T1204.005 | Malicious Library | agent | 2 | 3 | ◐ partial |
-| T1176.002 | IDE Extensions | agent | 1 | 2 | ◐ partial |
-| T1677 | Poisoned Pipeline Execution | agent | 1 | 2 | ◐ partial |
-| T1053.003 | Cron | agent | 1 | 2 | ◐ partial |
-| T1543.001 | Launch Agent | agent | 1 | 2 | ◐ partial |
-| T1546.004 | Unix Shell Configuration Modification | agent | 1 | 2 | ◐ partial |
-| T1552.001 | Credentials In Files | agent | 1 | 3 | ◐ partial |
-| T1552.003 | Shell History | agent | 1 | 3 | ◐ partial |
-| T1552.004 | Private Keys | agent | 1 | 3 | ◐ partial |
-| T1552.005 | Cloud Instance Metadata API | agent | 1 | 3 | ◐ partial |
-| T1552.008 | Chat Messages | agent | 1 | 20 | ◐ partial |
-| T1555.001 | Keychain | agent | 1 | 3 | ◐ partial |
-| T1555.003 | Credentials from Web Browsers | agent | 1 | 3 | ◐ partial |
-| T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 3 | ◐ partial |
-| T1528 | Steal Application Access Token | agent | 1 | 3 | ◐ partial |
-| T1074.001 | Local Data Staging | agent | 1 | 0 | ◐ partial |
-| T1560.001 | Archive via Utility | agent | 2 | 1 | ◐ partial |
-| T1030 | Data Transfer Size Limits | agent | 1 | 0 | ◐ partial |
-| T1016.001 | Internet Connection Discovery | agent | 1 | 1 | ◐ partial |
-| T1567 | Exfiltration Over Web Service | agent | 2 | 2 | ◐ partial |
+| T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial (open gap) |
+| T1685.007 | Impair Autonomous Defenses | agent | 1 | 8 | ◐ partial (open gap) |
+| T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial (by design) |
+| T1027.018 | Invisible Unicode | agent | 1 | 8 | ◐ partial (open gap) |
+| T1195.001 | Compromise Software Dependencies and Development Tools | agent | 6 | 7 | ◐ partial (open gap) |
+| T1059.001 | PowerShell | agent | 1 | 1 | ◐ partial (by design) |
+| T1059.004 | Unix Shell | agent | 1 | 1 | ◐ partial (by design) |
+| T1059.006 | Python | agent | 1 | 1 | ◐ partial (by design) |
+| T1059.013 | Container CLI/API | agent | 1 | 2 | ◐ partial (open gap) |
+| T1027.010 | Command Obfuscation | agent | 1 | 8 | ◐ partial (open gap) |
+| T1105 | Ingress Tool Transfer | agent | 1 | 2 | ◐ partial (by design) |
+| T1204.001 | Malicious Link | agent | 3 | 3 | ◐ partial (open gap) |
+| T1204.002 | Malicious File | agent | 1 | 2 | ◐ partial (open gap) |
+| T1204.004 | Malicious Copy and Paste | agent | 1 | 2 | ◐ partial (by design) |
+| T1204.005 | Malicious Library | agent | 2 | 3 | ◐ partial (open gap) |
+| T1176.002 | IDE Extensions | agent | 1 | 2 | ◐ partial (open gap) |
+| T1677 | Poisoned Pipeline Execution | agent | 1 | 2 | ◐ partial (open gap) |
+| T1053.003 | Cron | agent | 1 | 2 | ◐ partial (open gap) |
+| T1543.001 | Launch Agent | agent | 1 | 2 | ◐ partial (open gap) |
+| T1546.004 | Unix Shell Configuration Modification | agent | 1 | 2 | ◐ partial (open gap) |
+| T1552.001 | Credentials In Files | agent | 1 | 3 | ◐ partial (open gap) |
+| T1552.003 | Shell History | agent | 1 | 3 | ◐ partial (open gap) |
+| T1552.004 | Private Keys | agent | 1 | 3 | ◐ partial (open gap) |
+| T1552.005 | Cloud Instance Metadata API | agent | 1 | 3 | ◐ partial (open gap) |
+| T1552.008 | Chat Messages | agent | 1 | 24 | ◐ partial (by design) |
+| T1555.001 | Keychain | agent | 1 | 3 | ◐ partial (open gap) |
+| T1555.003 | Credentials from Web Browsers | agent | 1 | 3 | ◐ partial (open gap) |
+| T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 3 | ◐ partial (open gap) |
+| T1528 | Steal Application Access Token | agent | 1 | 3 | ◐ partial (open gap) |
+| T1074.001 | Local Data Staging | agent | 1 | 0 | ◐ partial (open gap) |
+| T1560.001 | Archive via Utility | agent | 2 | 1 | ◐ partial (open gap) |
+| T1030 | Data Transfer Size Limits | agent | 1 | 0 | ◐ partial (open gap) |
+| T1016.001 | Internet Connection Discovery | agent | 1 | 1 | ◐ partial (by design) |
+| T1567 | Exfiltration Over Web Service | agent | 2 | 2 | ◐ partial (open gap) |
 | T1567.001 | Exfiltration to Code Repository | agent | 0 | 0 | — |
-| T1567.002 | Exfiltration to Cloud Storage | agent | 0 | 0 | — |
+| T1567.002 | Exfiltration to Cloud Storage | agent | 1 | 1 | ◐ partial (open gap) |
 | T1567.003 | Exfiltration to Text Storage Sites | agent | 0 | 0 | — |
-| T1567.004 | Exfiltration Over Webhook | agent | 2 | 2 | ◐ partial |
-| T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | agent | 1 | 1 | ◐ partial |
-| T1485 | Data Destruction | agent | 2 | 2 | ◐ partial |
-| T1561 | Disk Wipe | agent | 1 | 1 | ◐ partial |
-| T1490 | Inhibit System Recovery | agent | 1 | 1 | ◐ partial |
-| T1070 | Indicator Removal | agent | 1 | 2 | ◐ partial |
-| T1070.003 | Clear Command History | agent | 1 | 2 | ◐ partial |
-| T1690 | Prevent Command History Logging | agent | 1 | 2 | ◐ partial |
-| T1685 | Disable or Modify Tools | agent | 1 | 2 | ◐ partial |
-| T1686 | Disable or Modify System Firewall | agent | 1 | 2 | ◐ partial |
-| T1553.001 | Gatekeeper Bypass | agent | 1 | 2 | ◐ partial |
-| T1553.004 | Install Root Certificate | agent | 2 | 2 | ◐ partial |
-| T1557 | Adversary-in-the-Middle | agent | 1 | 0 | ◐ partial |
-| T1098.001 | Additional Cloud Credentials | agent | 1 | 1 | ◐ partial |
-| T1098.003 | Additional Cloud Roles | agent | 1 | 2 | ◐ partial |
-| T1098.004 | SSH Authorized Keys | agent | 1 | 1 | ◐ partial |
-| T1136.001 | Local Account | agent | 1 | 1 | ◐ partial |
-| T1136.003 | Cloud Account | agent | 1 | 1 | ◐ partial |
-| T1548.003 | Sudo and Sudo Caching | agent | 1 | 2 | ◐ partial |
+| T1567.004 | Exfiltration Over Webhook | agent | 2 | 2 | ◐ partial (open gap) |
+| T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | agent | 1 | 1 | ◐ partial (open gap) |
+| T1485 | Data Destruction | agent | 2 | 2 | ◐ partial (open gap) |
+| T1561 | Disk Wipe | agent | 1 | 1 | ◐ partial (open gap) |
+| T1490 | Inhibit System Recovery | agent | 1 | 1 | ◐ partial (open gap) |
+| T1070 | Indicator Removal | agent | 1 | 2 | ◐ partial (open gap) |
+| T1070.003 | Clear Command History | agent | 1 | 2 | ◐ partial (open gap) |
+| T1690 | Prevent Command History Logging | agent | 1 | 2 | ◐ partial (open gap) |
+| T1685 | Disable or Modify Tools | agent | 2 | 2 | ◐ partial (open gap) |
+| T1686 | Disable or Modify System Firewall | agent | 1 | 2 | ◐ partial (open gap) |
+| T1553.001 | Gatekeeper Bypass | agent | 1 | 2 | ◐ partial (open gap) |
+| T1553.004 | Install Root Certificate | agent | 2 | 2 | ◐ partial (open gap) |
+| T1557 | Adversary-in-the-Middle | agent | 1 | 0 | ◐ partial (open gap) |
+| T1098.001 | Additional Cloud Credentials | agent | 1 | 1 | ◐ partial (open gap) |
+| T1098.003 | Additional Cloud Roles | agent | 1 | 2 | ◐ partial (open gap) |
+| T1098.004 | SSH Authorized Keys | agent | 1 | 1 | ◐ partial (open gap) |
+| T1136.001 | Local Account | agent | 1 | 1 | ◐ partial (open gap) |
+| T1136.003 | Cloud Account | agent | 1 | 1 | ◐ partial (open gap) |
+| T1548.003 | Sudo and Sudo Caching | agent | 1 | 2 | ◐ partial (open gap) |
 | T1176.001 | Browser Extensions | edr | 2 | 0 | — |
 | T1078.004 | Cloud Accounts | identity | 1 | 0 | — |
-| T1697 | Steal Application Specific Passwords | identity | 0 | 0 | — |
+| T1697 | Steal Application Specific Passwords | identity | 1 | 24 | ◐ partial (by design) |
 | T1496.004 | Cloud Service Hijacking | identity | 1 | 0 | — |
 | T1566 | Phishing | email | 1 | 0 | — |
 | T1566.004 | Spearphishing Voice | email | 1 | 0 | — |
 | T1684.001 | Impersonation | email | 2 | 1 | — |
-| T1657 | Financial Theft | email | 1 | 1 | ◐ partial |
+| T1657 | Financial Theft | email | 1 | 1 | ◐ partial (open gap) |
 | T1682 | Query Public AI Services | pre | 0 | 0 | — |
 | T1683.001 | Written Content | pre | 2 | 0 | — |
 | T1683.002 | Audio-Visual Content | pre | 2 | 0 | — |
@@ -144,7 +148,10 @@ aimed at (`ATTACK_SCOPE` in `data/attack.js`). **Lane** says who can see the tec
 an AI agent takes that a MoorAI hook, proxy or gateway sees; `edr`, `identity`, `email` and `pre` (the
 adversary's own infrastructure) are outside every MoorAI surface. Each credit in `data/threats.json` (`attack`)
 states its level and a one-line reason; a technique is *covered* when a rule credits it in full, *partial* when
-the best credit is bounded, and *—* otherwise. Coverage is a mechanism claim, not a detection rate. Technique ids
+the best credit is bounded, and *—* otherwise. A partial technique is *by design* when one of its partial credits
+carries `bound: "design"`: the forms it does not catch are indistinguishable from an agent's legitimate work, or
+outside anything an agent-side hook, proxy or gateway observes, and `boundReason` says which. Every other partial
+technique is an *open gap*: detection MoorAI has not built yet. Coverage is a mechanism claim, not a detection rate. Technique ids
 and names: [MITRE ATT&CK Enterprise v20.0](https://github.com/mitre-attack/attack-stix-data/releases/tag/v20.0), released 2026-10-13.
 
 Coverage is measured, not asserted: every number above is produced by running the shipped detection
@@ -154,16 +161,17 @@ categories and threat ids, never prompt content.
 
 ## Latency
 
-> Latency not measured in this run (`--no-latency`).
+> Latency measured on Apple M5 Max (18 logical cores), darwin 27.0.0 arm64, Node v22.23.4. Hook decisions in the run (unenrolled, so a flagged call is advised, not blocked): allow 140, advise 60.
 
 | Path | One sample | n | Warm-up | p50 | p95 | p99 | max |
 |------|------------|--:|--------:|----:|----:|----:|----:|
-| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: `engine.scan` at `file` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: `engine.scan` at `output` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | — | 200 | — | — | — | — |
-| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | — | 5 | — | — | — | — |
-| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | — | 5 | — | — | — | — |
+| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.28 ms | — | 23.2 ms |
+| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.55 ms | 5.61 ms | — | 7.15 ms |
+| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.56 ms | 1.04 ms | — | 1.91 ms |
+| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.26 ms | 7.83 ms | 8.42 ms | 12.3 ms |
+| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 172.2 ms | 206.5 ms | — | 231.3 ms |
+| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.5 ms | 50.6 ms | — | 57.8 ms |
+| Process: hook over HTTP (`moorai-hookd`, `PreToolUse`) | POST → answer, warm worker, interleaved with the hook | 200 | 5 | 39.1 ms | 50.0 ms | — | 56.1 ms |
 
 The cost a Claude Code user pays per tool call is the **hook end-to-end** row: one `node
 cli/moorai-hook.mjs` process spawned per `PreToolUse`, timed from spawn to exit, in a throwaway home
@@ -173,6 +181,10 @@ module loading and decision. The **in-process** rows are what the Agent SDK and 
 call in a long-lived process: `engine.scan` per stage over every text in
 `test/redteam/benign-corpus-v2.json`, and `createMoorAI().toolCall` (the decision code the parity test
 holds to the hook's verdicts) over a fixed mix of ten `PreToolUse` calls, six benign and four attack-shaped.
+The **hook over HTTP** row is the same event POSTed to `moorai-hookd` (Claude Code's `http` hook
+transport), in the same loop as the hook, timed from request to answer over a kept-alive connection; its
+decision is checked against the hook's for every call. Its workers have loaded the hook's modules before the
+request, so the row is what remains: the hook's own module, its decision and its exit.
 All rows run sequentially, one call at a time; machine load is not controlled.
 
 Percentiles are nearest-rank over the raw per-call timings, never interpolated and never derived from a

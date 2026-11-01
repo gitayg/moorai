@@ -265,22 +265,28 @@ fn register_loop(shared: &Shared) {
     }
 }
 
+/// One policy fetch (background cadence or IPC on demand); content-free tamper findings are queued.
+pub fn policy_fetch_once(shared: &Shared, timeout_ms: u64, actor: Option<String>) {
+    let now = || shared.now();
+    match crate::policy::fetch_cycle_with(&shared.state, shared.deps.console.as_ref(), &now, timeout_ms, actor) {
+        Ok(rejected) => {
+            let alerts: Vec<_> = rejected
+                .iter()
+                .map(|r| serde_json::json!({"kind":"policyRejected","source":r.source,"status":r.status,"ts":crate::clock::iso_ms(shared.now() as i64)}).as_object().cloned().unwrap_or_default())
+                .collect();
+            if !alerts.is_empty() {
+                let _ = shared.lock().alerts.enqueue(alerts, None);
+                shared.poke();
+            }
+        }
+        Err(e) => eprintln!("moorai-guardd: policy fetch: {e:?}"),
+    }
+}
+
 fn policy_loop(shared: &Shared) {
     while !shared.stopping() {
         if shared.lock().binding.is_some() {
-            match crate::policy::fetch_cycle(&shared.state, shared.deps.console.as_ref()) {
-                Ok(rejected) => {
-                    let alerts: Vec<_> = rejected
-                        .iter()
-                        .map(|r| serde_json::json!({"kind":"policyRejected","source":r.source,"status":r.status,"ts":crate::clock::iso_ms(shared.now() as i64)}).as_object().cloned().unwrap_or_default())
-                        .collect();
-                    if !alerts.is_empty() {
-                        let _ = shared.lock().alerts.enqueue(alerts, None);
-                        shared.poke();
-                    }
-                }
-                Err(e) => eprintln!("moorai-guardd: policy fetch: {e:?}"),
-            }
+            policy_fetch_once(shared, crate::policy::FETCH_TIMEOUT_MS, None);
         }
         let delay = shared.lock().policy.next_fetch_delay_ms(shared.now());
         shared.sleep_ms(delay);
@@ -492,6 +498,14 @@ fn is_hex(s: &str, n: usize) -> bool {
     s.len() == n && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
+/// The actor of the IPC peer `uid`, derived as its hook computes it (policy::derive_actor) from the uid's
+/// login name, the helper's own install token and the hostname. None when any of them is missing.
+fn peer_actor(shared: &Shared, uid: u32) -> Option<String> {
+    let token = shared.lock().binding.as_ref().and_then(|b| b.secret.install_token.clone())?;
+    let user = shared.deps.sys.login_name(uid)?;
+    crate::policy::derive_actor(Some(&token), &user, &shared.deps.sys.hostname())
+}
+
 fn short_token(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
 }
@@ -532,8 +546,43 @@ impl Handler for IpcHandler {
                 (reply(Response::Hello(HelloResp { proto: PROTO_VERSION, helper_version: crate::HELPER_VERSION.into(), tenant, device_id: s.device_id.clone(), key_id, caps, proof })), None)
             }
             Request::Policy(p) => {
+                if p.actor.as_deref().is_some_and(|a| !crate::policy::valid_actor(a)) {
+                    return (err(ErrorCode::BadRequest, "actor must be h2: and 16..64 hex"), None);
+                }
+                // A policy request counts as hook activity (fetch cadence). The actor is never taken from the
+                // message: the helper derives it from the peer (kernel uid -> login name, its own install token,
+                // the hostname) exactly as that peer's hook computes it. A request naming any other actor, or
+                // naming one when none can be derived, is answered `none` with no fetch (the hook then takes
+                // its direct path). A request naming no actor is served the derived one, or, when none can be
+                // derived, only the actor-less policy. The derived actor is bound to the uid (one actor per
+                // uid). The answer is that actor's own held policy, fetched on demand when missing or older
+                // than 60 s (bounded by ON_DEMAND_FETCH_MS; this connection's thread waits, no other). No
+                // request changes what another uid's requests or the background fetch name or receive.
+                let now = shared.now();
+                let derived = peer_actor(shared, peer.uid);
+                let actor = match (p.actor.as_deref(), derived) {
+                    (Some(claimed), Some(d)) if claimed == d => Some(d),
+                    (Some(_), _) => {
+                        shared.lock().policy.last_call_ms = now;
+                        return (reply(Response::Policy(crate::policy::answer(None, None, now))), None);
+                    }
+                    (None, d) => d,
+                };
+                let on_demand = {
+                    let mut s = shared.lock();
+                    s.policy.last_call_ms = now;
+                    if let Some(a) = actor.as_deref() {
+                        if !s.policy.bind_actor(peer.uid, a, now) {
+                            return (reply(Response::Policy(crate::policy::answer(None, None, now))), None);
+                        }
+                    }
+                    s.binding.as_ref().map(|b| b.tenant.clone()).is_some_and(|t| s.policy.needs_on_demand(&t, actor.as_deref(), now))
+                };
+                if on_demand {
+                    policy_fetch_once(shared, crate::policy::ON_DEMAND_FETCH_MS, actor.clone());
+                }
                 let s = shared.lock();
-                (reply(Response::Policy(crate::policy::answer(s.policy.held.as_ref(), p.if_iat.as_deref(), shared.now()))), None)
+                (reply(Response::Policy(s.policy.answer_for(actor.as_deref(), p.if_iat.as_deref(), shared.now()))), None)
             }
             Request::Submit(sub) => {
                 if sub.alerts.is_empty() || sub.alerts.len() > MAX_SUBMIT_ALERTS {
@@ -705,6 +754,9 @@ mod tests {
         }
         fn hostname(&self) -> String {
             "test-host".into()
+        }
+        fn login_name(&self, uid: u32) -> Option<String> {
+            Some(format!("user{uid}"))
         }
     }
 

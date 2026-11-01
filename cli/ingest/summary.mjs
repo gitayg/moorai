@@ -103,9 +103,9 @@ const C = process.stdout.isTTY && !process.env.NO_COLOR
 
 export function toText(r) {
   const L = [];
-  const files = r.files["claude-code"] + r.files.codex;
+  const files = Object.values(r.files).reduce((a, b) => a + b, 0);
   L.push("", `${C.b}MoorAI transcript ingest — what enforce mode would have done in your past agent sessions${C.off}`);
-  L.push(`${C.dim}policy: ${r.policy.id} (${r.policy.source}) · window: last ${r.days} day(s) · ${files} transcript file(s): ${r.files["claude-code"]} Claude Code, ${r.files.codex} Codex · ${(r.bytesRead / 1048576).toFixed(1)} MiB read${C.off}`, "");
+  L.push(`${C.dim}policy: ${r.policy.id} (${r.policy.source}) · window: last ${r.days} day(s) · ${files} transcript file(s): ${r.files["claude-code"]} Claude Code, ${r.files.codex} Codex${r.files.gemini ? `, ${r.files.gemini} Gemini CLI` : ""} · ${(r.bytesRead / 1048576).toFixed(1)} MiB read${C.off}`, "");
   L.push(`  sessions        ${r.sessions.total} total · ${r.sessions.withFindings} with findings · ${C.r}${r.sessions.wouldBlock} would have had a call blocked${C.off} · ${C.y}${r.sessions.wouldAsk} would have needed sign-off${C.off}`);
   L.push(`  events          ${r.events.call} tool calls · ${r.events.post} tool results · ${r.events.prompt} prompts (${r.events.promptScanned} scanned under this policy) · ${r.events.unsupported} calls to tools the hook does not judge`);
   L.push(`  decisions       ${C.r}${r.decisions.deny} block${C.off} · ${C.y}${r.decisions.ask} ask${C.off} · ${C.c}${r.decisions.mask} mask${C.off} · ${r.decisions.allow} allow (${r.flaggedAllow} of them reported a finding) · ${r.findings} findings`);

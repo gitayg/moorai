@@ -126,7 +126,34 @@ These are the documented shapes the code is built against (read 2026-10-06):
     clients raise on such a line (ollama-python `_client.py`: `if err := part.get('error'): raise
     ResponseError(err)`; ollama-js `src/utils.ts`: `if ('error' in message) throw new Error(message.error)`).
 
-Any other path or method (`/v1/models`, `count_tokens`, embeddings, the OpenAI Responses API, Bedrock,
+- **OpenAI Responses API** `POST …/responses` ([`openai-responses.mjs`](openai-responses.mjs), from the
+  official SDK's types, openai-node `src/resources/responses/responses.ts`): request `instructions`, `input`
+  (a string, or items: messages of role user / system / developer with `input_text` parts;
+  `function_call_output`, `custom_tool_call_output`, `local_shell_call_output` ("A JSON string of the
+  output"), `shell_call_output` (its `stdout` / `stderr`) and `apply_patch_call_output` fed back) are
+  scanned; the model's own earlier items are not, and `computer_call_output` is a screenshot, not text.
+  Response `output[]` items `function_call` ("A JSON string of the arguments to pass to the function"),
+  `custom_tool_call` (free-text `input`) and `mcp_approval_request` (named `mcp__<server_label>__<name>`)
+  are decided, and so are the built-in tools the client runs: `local_shell_call` ("A tool call to run a
+  command on the local shell"; `action.command` is an argv list, `action.env` its environment) as `Bash`
+  with the env assignments and the argv joined by spaces; `shell_call` (`action.commands`, decided whatever
+  its `environment`) as `Bash` with the commands joined by newlines; `apply_patch_call` (`operation` with
+  `path` and `diff`) as `Write` for `create_file` (content: the diff) and `delete_file` (empty content) and
+  as `Edit` for `update_file` (new_string: the diff); `computer_call` (`action` / `actions`) under the name
+  `computer`, its action JSON content-scanned (no hook tool reads clicks and keys, so a workload profile's
+  tool list does not restrict it). A shell call without a list of command strings, or a patch operation
+  other than those three, is kept raw and refused in enforce mode. Stream: `event: <type>` SSE; a call
+  appears in `response.output_item.added` / `.done`, `response.function_call_arguments.delta` / `.done`,
+  `response.custom_tool_call_input.delta` / `.done`, `response.shell_call_command.added` / `.delta` /
+  `.done` (`output_index`, `command_index`; the commands are rebuilt from these and decided too) and the
+  terminal `response.completed` /
+  `.incomplete` / `.failed`. Every reading is decided; a denied call ends the stream with an `error` event
+  (ResponseErrorEvent: `{ type: "error", code, message, param, sequence_number }`).
+- **OpenAI embeddings** `POST …/embeddings` ([`openai-embeddings.mjs`](openai-embeddings.mjs)): string inputs
+  ("Input text to embed, encoded as a string or array of tokens") are scanned as prompt content; token ids
+  are not.
+
+Any other path or method (`/v1/models`, `count_tokens`, `GET …/responses/{id}`, Bedrock,
 Gemini's Interactions API, `countTokens`, `embedContent`, batch, cached contents, Ollama's `/api/tags`,
 `/api/show`, `/api/embed`, `/api/pull` and the rest of its model management) is **forwarded unparsed and
 unchecked**.
@@ -138,7 +165,9 @@ unchecked**.
 | Anthropic Messages `POST …/messages`, JSON and SSE | yes: client `tool_use` blocks |
 | OpenAI Chat Completions `POST …/chat/completions`, JSON and SSE | yes: `tool_calls`, deprecated `function_call` |
 | a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM) at its `…/v1/chat/completions`, routed with `--route /local=http://127.0.0.1:<port>/v1` | yes, the Chat Completions parser; tested against a fake only (see [Local models](#local-models)) |
-| OpenAI Responses API (`/responses`), Assistants, Realtime | **no** — forwarded unparsed |
+| OpenAI Responses API `POST …/responses`, JSON and SSE | yes: `function_call`, `custom_tool_call`, `mcp_approval_request`, and the client-run `local_shell_call`, `shell_call` (as `Bash`), `apply_patch_call` (as `Write` / `Edit`) and `computer_call` (content-scanned); tested against a fake provider and with the official OpenAI Node SDK 4.104.0 against that fake (allowed stream intact; denied call raised `PermissionDeniedError` / `APIError`); the client-run built-in tools against the fake provider only |
+| OpenAI Responses API server-run items (`mcp_call`, `web_search_call`, `code_interpreter_call`), `GET …/responses/{id}` (background mode), Assistants, Realtime | **no** — they run at the provider, or are not parsed |
+| OpenAI embeddings `POST …/embeddings` | no tool calls exist; string inputs are scanned |
 | Gemini API `POST …/models/<m>:generateContent` and `:streamGenerateContent`, JSON, JSON array (no `alt=sse`) and SSE (`alt=sse`) | yes: `functionCall` parts; tested against a fake upstream only |
 | Vertex AI `…/publishers/google/models/<m>:generateContent` / `:streamGenerateContent` (and tuned `…/endpoints/<id>:…`) | yes, the same parser: the documented request fields and response type are the Gemini API's; tested against a fake upstream only |
 | Vertex AI streamed `partialArgs` (`streamFunctionCallArguments`) | judged as unparsed arguments: content-scanned, **refused in enforce mode** |
@@ -148,7 +177,7 @@ unchecked**.
 | `alt=proto` / protobuf bodies on a Gemini path | a response is refused in enforce mode (not JSON or SSE) and reported unevaluated in report mode; a protobuf **request** is forwarded unscanned |
 | Amazon Bedrock (`InvokeModel`, `Converse`, its event-stream framing) | **no** — forwarded unparsed |
 | Ollama's native `POST …/api/chat`, JSON (`"stream": false`) and NDJSON (the default) | yes: `message.tool_calls`; tested against a fake upstream and live against Ollama 0.15.6 with `mistral-nemo` |
-| Ollama's native `POST …/api/generate` | no tool calls exist; `prompt` / `system` / `suffix` / `template` are scanned like any prompt, and the generated `response` text is scanned **report-only** (alerted, never withheld) |
+| Ollama's native `POST …/api/generate` | no tool calls exist; `prompt` / `system` / `suffix` / `template` are scanned like any prompt, and the generated `response` text is scanned by every detector **report-only** (alerted, never withheld) besides the [reply text scan](#reply-text-scanning) |
 | Anthropic `server_tool_use` / `mcp_tool_use` | **no** — they run at the provider, not in the agent |
 | anything the agent sends to a provider **without** going through this proxy (an SDK pinned to the provider URL, a direct HTTPS call, a second key) | **no** |
 
@@ -174,8 +203,8 @@ up.
   blocked or asked about per policy, exactly as in a user turn.
   - **Opt-in, signed policy or admin binding only:** `"operatorContext": { "privacy": "report" }` (the only
     value besides the default `"enforce"`) makes PII-class findings in operator context report-only: threats
-    1, 9, 15, 18, 27, 36 and 44 (card numbers, IBANs, email addresses, phone and national ids, IP markers,
-    health data). They are reported at stage `context` (`decision: "notify"`, the threat's own risk level,
+    1, 9, 15, 18, 27, 36, 44 and 90 (IBANs, email addresses, phone and national ids, IP markers, health data,
+    card numbers). They are reported at stage `context` (`decision: "notify"`, the threat's own risk level,
     never `Blocked`; `enforcement: LIMITED` when the policy's action for it is block or justify) and do not
     refuse the request. It is read from the root-owned admin binding (`operatorContext` in
     `/etc/moorai/config.json`, which wins, either value) or from a console-signed policy this device
@@ -225,8 +254,10 @@ Server-side tool blocks (`server_tool_use`, `mcp_tool_use`) are not checked: the
 not in the agent. File contents are read from the proxy's own filesystem, resolved against `--cwd`. If
 the proxy does not share the agent's filesystem, only path names are checked.
 
-**Model text.** The model's own text is not scanned on any API, with one exception: Ollama `/api/generate`
-has no structured tool calls, so its generated `response` text is scanned at stage `output`, report-only, in
+**Model text.** The text of every reply is scanned for secrets, personal data, card numbers and the
+system prompt (see [Reply text scanning](#reply-text-scanning)); each tool call is also judged against the
+person's task (see [Intent alignment](#intent-alignment)). In addition, Ollama `/api/generate`
+has no structured tool calls, so its generated `response` text is scanned by every detector at stage `output`, report-only, in
 every mode. It is filed as a PostToolUse observation (`tool: "model-proxy:completion"`), so a deny-level
 finding is stamped `enforcement: LIMITED`, and it is never withheld, streaming or not: holding a whole
 generation to scan it would end streaming for `/api/generate` in enforce mode, and stage `output` flags
@@ -307,6 +338,7 @@ A function with no hook branch is classed by its **name** into an impact class
 | `identity` | `impersonate`, `sudo`, `login_as`; a grant verb with `role`, `permission`, `privilege`, `admin`, `superuser`, `scope`, `acl`, `owner`; a reset verb with `password`, `mfa`, `2fa`, `otp`, `totp`, `passcode`, `credential(s)`, `recovery`; a delete / disable / suspend / close / ban / lock verb with `account`, `user`, `member`, `profile`, `identity`, `login` |
 | `destructive` | `delete`, `purge`, `wipe`, `destroy`, `truncate`, `erase`, `shred`, `nuke`, `obliterate`; `drop` with `table`, `database`, `db`, `collection`, `schema`, `index`, `bucket`, `keyspace` |
 | `delegation` | `handoff`, `hand_off`, `fanout`, `fan_out`, `delegate`, `spawn`; `transfer_to_<agent>`; a call / invoke / run / dispatch / launch / start / create / assign / route / forward / send / ask / consult verb with `agent`, `subagent`, `worker`, `crew`, `swarm` |
+| `detokenize` | the MCP detokenize names ([`../cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs) `detokenizeName`): `detokenize`, `decrypt`, `unseal`, `unmask`, `unredact`, `deanonymize`, `reidentify`, `decipher`, `unprotect`; a value-read verb (`get`, `read`, `fetch`, `retrieve`, `reveal`, `show` …) with `secret(s)`, `password(s)`, `credential(s)`, a card number (`pan`, `cvv`, `card_number`, `credit_card`) or `vault` (with `read`, `fetch`, `retrieve`, `reveal`, `access`, `export`, `dump`); not a listing or metadata name (`list_secrets`, `get_secret_metadata`) and not a bare `get_card`. Read verbs do not exclude it: reading the value is the impact |
 
 - **Words.** The name is normalized as `functionToolActions` normalizes it (NFKC, invisible characters and a
   `functions.` / `tools.` / `default_api.` prefix removed), camelCase is split, and the result is cut into
@@ -321,8 +353,12 @@ A function with no hook branch is classed by its **name** into an impact class
   to the read verb, because reading everything is its impact (`get_all_users`, `fetch_all_customer_records`);
   a read-noun ending still excludes it (`get_export_status`). A name can be in more than one class
   (`delete_account` is `identity` and `destructive`).
-- **Action.** Built in: `alert` for every class — reported, never refused, in every mode. A signed policy
-  sets a class's action:
+- **Action.** Built in: `alert` for every class — reported, never refused, in every mode — except `detokenize`,
+  whose built-in action is `ask`: encrypted or tokenized data plus a tool that makes it readable is readable
+  data. In enforce mode that ask is settled by the headless rule (deny unless `headlessAsk` is
+  `allow-with-report`); in report mode it is forwarded and filed. `detokenize` takes `businessToolActions.detokenize`,
+  else `mcpToolClassDefaults.detokenize` (`allow` / `ask` / `block`, the MCP class default), else `ask`. A signed
+  policy sets a class's action:
 
   ```json
   { "businessToolActions": { "money": "block", "bulk-data": "ask", "identity": "ask", "destructive": "alert", "delegation": "allow" } }
@@ -330,7 +366,7 @@ A function with no hook branch is classed by its **name** into an impact class
 
   The vocabulary is `functionToolActions`': `block`, `ask` (settled by the headless rule in enforce mode),
   `alert`, `allow` (the class is not reported). A missing class or a value outside the vocabulary keeps
-  `alert`. A name in several classes takes the strictest of their actions.
+  `alert` (`ask` for `detokenize`). A name in several classes takes the strictest of their actions.
 - **The most specific rule wins.** A `functionToolActions` key that names the function itself — an exact
   name or a wildcard with a real prefix (`issue_*`) — decides the call and its class is not applied, `allow`
   included: `{"functionToolActions": {"apply_coupon": "allow"}}` beside `"money": "block"` lets
@@ -425,6 +461,435 @@ refused as ambiguous in enforce mode. Not covered: a client that resolves look-a
 scripts (no mainstream client does; not tested), Unicode case folds beyond `toUpperCase().toLowerCase()`
 (Go's fold orbits for `ſ` and the Kelvin sign are covered), and a number field that a decision reads (none
 does: every decision field is a string).
+
+## Intent alignment
+
+Each tool call the model returns is also judged against the task the **person** gave in this session: does
+it fit what they asked for? It is the hook's intent alignment (`data/intent-alignment.js`, lexical: "did
+the person ever name this destination, file or service"), run per session in the proxy's memory by
+`data/intent-server.mjs`. Code: [`intent.mjs`](intent.mjs), [`user-turns.mjs`](user-turns.mjs), and the
+judging point in [`check.mjs`](check.mjs). It covers every API with tool calls (Anthropic, OpenAI Chat
+Completions and Responses, Gemini, Ollama `/api/chat`), streaming and not.
+
+**The session.** The first of, per request:
+
+1. `X-MoorAI-Session-Id: <id>` (at most 256 characters): the application names its session. It is
+   addressed to the proxy and is not sent upstream.
+2. `X-Claude-Code-Session-Id` (Claude Code's own session id; forwarded as sent).
+3. The trace-id of a valid incoming W3C `traceparent` (see [Trace context](#trace-context)): one agent run
+   under one trace is one task.
+4. The conversation: a keyed hash of its first user turn. Every request re-sends the whole conversation, so
+   its first turn names it on every turn.
+5. None of these (no header, no trace, no user turn): one session, `none`, in which nothing is ever
+   captured.
+
+A request body the proxy cannot parse (a gzip-encoded request, a leading byte-order mark) has no turns: its
+session is the header's or the trace's, else `none`, nothing is captured from it, and its tool calls are
+still judged (in a session with no task, as `task-unknown`).
+
+The explicit headers win over the trace because one trace can wrap several conversations (a workflow trace
+around many agent runs), which would merge their tasks and make more calls look aligned. An application
+that runs many conversations under one trace, or two conversations that start with the same words, should
+send `X-MoorAI-Session-Id`.
+
+**The task.** From each request's real user turns: the first turn (the task) and the latest turn. Never a
+system prompt or developer message, never a tool result, function response or document fed back to the
+model, never the model's own turns, and never an agent harness's own blocks (below):
+
+| API | A user turn is |
+|---|---|
+| Anthropic | a `user` message's string or `text` blocks; a `user` message that carries any `tool_result` block is the agent returning results, and its text blocks are not counted |
+| OpenAI Chat Completions | a `user` message (string or text parts) |
+| OpenAI Responses | `input` as a string, or its `message` items with `role: "user"` (`input_text` / `text` parts) |
+| Gemini | a `contents[]` entry with `role: "user"` (or none) and no `functionResponse` part; `thought` parts are not counted |
+| Ollama | `/api/chat` `user` messages; `/api/generate` `prompt` |
+
+**Harness blocks are stripped first.** An agent harness writes text of its own into the user role. In
+Claude Code 2.1.295 (measured in its bundle) CLAUDE.md, memory and the session context reach the model as a
+user-role text block `<system-reminder>\nAs you answer the user's questions, you can use the following
+context: … Contents of <path> …</system-reminder>`; background workers' results arrive as user-role
+`<task-notification>` blocks; a `!` command's output is `<bash-stdout>` / `<bash-stderr>`; a local slash
+command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook output is
+`<user-prompt-submit-hook>`; the IDE's selection and open file are `<ide_selection>` / `<ide_opened_file>`;
+an MCP resource is `<mcp-resource server="…" uri="…">`. A tag may carry attributes of any length.
+Each of those blocks is removed before any feature is taken
+(`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
+only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
+credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md that happens to use those
+words. One left-to-right scan per text over every harness tag, with a stack: the first block ends at its
+own matching close and blocks nest. Kept: the text before the first harness tag, and — only when that block
+closes cleanly and no further harness tag follows in the same text — the text after it. Fail closed: an
+unclosed block, a tag with no closing `>`, a close with no open block, or a close that does not match the
+innermost open block (interleaved tags), keeps only the text before the first harness tag and drops the rest
+of the turn (every later text part); any further
+harness tag after the first block (a second block of any tag, or a stray close) keeps only the text before
+the first harness tag of that text — so a quoted file carrying `</system-reminder> words <system-reminder>`
+cannot expose `words`. The cost is that a person's words after a harness block, in a text where another
+harness tag follows, are dropped, which can only make a call look less aligned. Linear. `<bash-input>` (the
+command the person typed) is kept.
+
+**Only requests that declare tools, and only once the provider accepts them.** A request with no `tools`
+(nor OpenAI Chat's legacy `functions`) is a side request — Claude Code's WebFetch summariser, whose user turn
+is the fetched page; compaction; a title — and adds nothing to the task. The turns of a request that does
+are captured when the provider's **2xx** response begins, before any tool call in it is judged; a request
+the provider rejects adds nothing.
+
+**Whose "user" turn.** In an agent-to-agent call — a sub-agent started by Claude Code's Task / Agent tool,
+or any framework's delegated agent — the sub-agent's first user turn is the prompt the **parent model**
+wrote, and this proxy cannot tell it from a person's. Its calls are then judged against model-written text,
+so a parent steered by an injection can widen a sub-agent's scope; the same holds for a custom slash
+command's expanded body (a file in the repository). Where the task must be the person's by construction,
+name the session with `X-MoorAI-Session-Id` and set its task over the explicit channel — moorai-serve's
+`POST /v1/task`, or the Agent SDK's prompt capture — instead of relying on the turns this proxy sees.
+
+**Compaction.** When Claude Code compacts a conversation, the model-written summary of the earlier turns
+becomes the first user turn, opening "This session is being continued from a previous conversation that ran
+out of context." (2.1.295's bundle). It repeats whatever those turns quoted, so a turn that opens with that
+sentence is never captured. Another harness's own summary wording is not recognised and counts as a
+person's turn.
+
+**First turn once.** A session's first captured request adds its first and latest user turns. After that,
+each request adds only its latest user turn: the first turn of a re-sent conversation is the client's to
+rewrite, or a compaction summary, so it is never learned again. The proxy remembers which sessions it
+captured (keyed hashes, at most 1,024, 24 hours); a session the store evicted while the proxy still
+remembers it is restored from its latest turn only, which can only make a call look less aligned. The store keeps per session only keyed hashes of the turn's features (hosts,
+paths, known service names, three labels), at most 1,024 sessions, 512 features each, 24 hours; a turn's
+text is in memory for the call only.
+
+**Task unknown.** For a risky call in a session with no live captured task — no real user turn was ever
+seen in it (a request that carries only tool results, or the `none` session), or the store evicted or
+expired it — the store answers class `task-unknown`, and the proxy handles it like any misaligned call: an
+alert, and in `--mode enforce` the ask or the block. **So `intentAlignment: "block"` refuses a risky call in
+a session without a captured user turn**, and `"ask"` makes it a headless ask (a deny by default). A call
+the store does not class as risky is never judged, task or not.
+
+**Owner.** The store accepts an owner principal per session, so one caller cannot evict another's
+sessions. The proxy passes none: every client of one proxy holds the same token, so it has no per-client
+principal to give. All of a proxy's clients share one session space, and `X-MoorAI-Session-Id` is the
+client's to choose: a client that names another client's session id adds its own turns to that session's
+task. Run one proxy per tenant where that matters.
+
+**Judging.** At the point the proxy decides tool calls, after its own verdict on the call and not when that
+verdict is a deny, for a call that maps to a hook tool (`Bash`, `PowerShell`, `Read`, `mcp__*` …; the
+table under [What it checks](#what-it-checks)). Every reading of the call that maps is judged, each with the
+findings of its own decision — the as-sent mapping, `Bash {"cmd": …}` read with `cmd` as its command, the
+tool a dispatcher names inside its arguments (`invoke {"tool_name": "Bash", "args": {…}}`), the other
+readings under [Parser differentials](#parser-differentials) — and the strictest verdict wins (deny over
+ask). The store's lexical rules decide which calls are judged at all: an upload to a host (egress, a
+`curl` / `wget` destination given as a bare argument included), an upload to MoorAI's own loopback
+endpoints or any other loopback service, whatever the port (moorai-control), a credential read, a destructive command, an MCP write. The policy's
+`intentAlignment`:
+
+| `intentAlignment` | `--mode report` | `--mode enforce` |
+|---|---|---|
+| `"off"` | nothing captured or judged | same |
+| `"report"` (default) | one alert | one alert |
+| `"ask"` | one alert, `enforcement: LIMITED` | the call is an ask, settled by server mode's headless rule as a `functionToolActions` ask is: a deny (the proxy's refusal) unless `--headless-ask allow-with-report` (`--headless-ask pass-through` is refused at startup: the proxy has no approver, so an unsettled ask would be forwarded) |
+| `"block"` | one alert, `enforcement: LIMITED` | the call is denied: the proxy's refusal, or the replacement text with `--denied-tool-call replace` |
+
+**The alert** is the hook's: `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
+`threatId: 64`, `riskLevel: "Medium"`, `stage: "behavior"`, `tool: "model-proxy:<name>"`, `decision`
+(notify / ask / deny, the configured outcome), `intent: {class, mode}` with class `egress`, `credentials`,
+`destructive`, `mcp-write`, `moorai-control` or `task-unknown`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
+target hash. One alert per target per session; a refused call is refused every time. No prompt, path,
+host or argument is in it.
+
+**The key.** One HMAC key per process for the store and the conversation hash. `--intent-key-file <path>`
+reads 64 hex characters from a file owned by root and not group- or world-writable (on Windows, a
+protected file), so several proxy replicas hash alike; otherwise, or when that file is not usable (said
+once on stderr), 32 random bytes at start. It never leaves the process. A restart with a random key forgets
+every session, which costs little here: the next request re-sends the conversation and its first turn is
+captured again (the intermediate turns, and which targets already alerted, are what is forgotten; a
+conversation's first request after a restart is judged on its first and latest turns only).
+
+**moorai-control: loopback uploads are always judged.** Every upload or egress to a host on this machine —
+by URL (any scheme), bare `host:port`, `nc`, `socat` or a UNC copy — is class `moorai-control` and is never
+aligned, whatever the task names and **whatever the port**: readable or not, one of MoorAI's own listeners
+(moorai-serve 8790, the model proxy 8791, the MCP gateway 8848: an agent writing its own task with
+`POST /v1/task`, or driving the control that judges it) or any other local service (a database on
+`localhost:5432`, a dev server on `:3000`). The port is only the target's detail (`loopback:<port>`, leading
+zeros dropped; `loopback` when it cannot be read); the decision never depends on parsing it. So in `ask` or
+`block` every loopback upload by an agent is asked or refused; a GET (no upload) is not judged, and a copy
+onto WSL's file share (`\\wsl.localhost\…`) is not a loopback service. The host is normalised before it is
+classed, not matched by spelling: `localhost` / `*.localhost`, 127.0.0.0/8 and 0 in any inet_aton spelling
+(`127.1`, `2130706433`, `0x7f.1`, `0177.0.0.1`, `0`), `::1`, `::`, IPv4-mapped and -compatible IPv6
+(`[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`), a trailing dot, any case. When the same command also uploads to a
+remote host, it is still judged moorai-control (the strictest) with the remote sites among its targets, so
+each remote destination raises its own alert.
+
+**Bare curl / wget destinations.** Every curl / wget argument that is not a flag or a flag's value is a
+destination (`--url VALUE` and `--url=VALUE` too; any scheme; a query or fragment after the host is ignored).
+A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(…)`, backticks, a glob, a
+brace, a backslash — or whose authority it cannot read at all (an underscore in the host, a port of more than
+16 digits), is the site `unknown`, which no task can name (every site a task yields has a dot), so such an
+upload is never aligned. A loopback host is recognised before the rest of the authority is read, so an
+unreadable port on it is still moorai-control. Any upload form whose destination cannot be read at all (scp,
+rsync or sftp to a dotless ssh alias, `Invoke-RestMethod -Uri $u`, nc or socat to a variable, `curl -K cfg`)
+is egress to the site `unknown` too, and so is every host past the first 64 in one command; only a copy onto
+WSL's own file share (`\\wsl.localhost\…`) and nothing else is not judged.
+
+**Limits.**
+- Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
+  that host, and a task pasted from an untrusted source puts its hosts in scope.
+- The person's turn is told from a harness's only by the blocks listed above; a sub-agent's prompt is
+  model-written and judged as the task (see **Whose "user" turn**). A compaction summary is recognised
+  only by Claude Code's opening sentence (see **Compaction**).
+- A call the proxy cannot map to a hook tool (an unknown function, content-scanned instead) is not judged.
+- If `data/intent-server.mjs` cannot start, the proxy runs without intent alignment and says so once on
+  stderr.
+
+## Reply text scanning
+
+The text of the model's reply, what reaches the person or the application, is scanned for leaks, on every
+API the proxy parses, streaming and not. Code: [`response-scan.mjs`](response-scan.mjs) (detection),
+[`text-codecs.mjs`](text-codecs.mjs) (where the text is, per API), [`text-guard.mjs`](text-guard.mjs)
+(holding and rewriting), [`text-report.mjs`](text-report.mjs) (alert and refusal).
+
+| Class | Threat | What finds it |
+|---|---|---|
+| `secret` | #39 | the engine's output-stage secret detectors (`secret-*`, `dlp-jwt`, `dlp-private-key` …) |
+| `payment-card` | #90 | `dlp-payment-card` (Luhn and issuer-range checked, `data/card-iin.js`), `pci-cvv` |
+| `personal-data` | #15 | `dlp-email`, `dlp-phone`, `dlp-national-id`, `pii-passport` |
+| `system-prompt` | #52 | the reply reproduces a run of at least 24 consecutive words of this request's system prompt |
+
+The first three are the detection engine the proxy already judges outbound content with (the runtime's
+policy-built engine, detector packs included), restricted to those threats' detectors that declare the
+`output` stage. A threat the policy sets `"disabled"` is not looked for.
+
+**System-prompt echo.** The request's system text (Anthropic `system`, OpenAI `system` / `developer`
+messages, Responses `instructions`, Gemini `systemInstruction`, Ollama `system`) is lower-cased and split
+into words (runs of letters and digits). Each run of 8 consecutive words is HMAC-SHA256'd with a random
+per-process key and its first 48 bits kept, at most 8,192 shingles (words past that are not compared),
+cached for the 16 most recent system prompts. A system prompt under 24 words is not tracked. The reply's
+words go through the same 8-word window as they arrive; 17 consecutive matching shingles (a 24-word run) is
+an echo. The system prompt and the reply are never stored or logged, only these hashes, in memory. Cost: one
+HMAC per word (an 8,192-word system prompt took 25 ms to hash, once per process while cached). A run of
+shared words is not proof of copying (a stock phrase the prompt quotes), and a paraphrase, a translation or
+a re-tokenized copy is not found.
+
+**Modes.** The policy's `responseScan`:
+
+| `responseScan` | `--mode report` | `--mode enforce` |
+|---|---|---|
+| `"report"` (default) | one alert per finding; the reply is forwarded byte-identical | same |
+| `"mask"` | alert, `enforcement: LIMITED`; nothing changed | the match is replaced by `[REDACTED:#<threat>]` (`[REDACTED:system-prompt]` for an echo) in what the client receives; `reasonCode: "MASK_APPLIED"` |
+| `"block"` | alert, `enforcement: LIMITED`; nothing changed | non-streaming: HTTP 403 in the provider's error shape (`x-moorai-model-proxy: refused`); streaming: the provider's error event ends the stream (the same shapes as a denied tool call); `riskLevel: "Blocked"` |
+
+A masked non-streaming body is re-serialized (`x-moorai-model-proxy: masked`); one with no finding goes out
+byte-identical. In a stream, an event whose text changed is re-serialized — the `event:` line kept, the
+same JSON keys in the same order, one `data:` line (one line for NDJSON) — and every other event goes out
+byte-identical. Report-mode scanning runs after the bytes are written (a non-streaming body after the
+response ends), so it never sits between the provider and the client.
+
+**Streaming: the rolling window.** Each text channel (an Anthropic content block, an OpenAI choice, a
+Responses content part, a Gemini candidate, an Ollama reply) is scanned over its last 256 characters
+already passed on plus the text not yet passed on, so a match split across events, or across network
+chunks, is found whole.
+- **report:** nothing is held; the channel is scanned every 4,096 characters and at its end. Memory per
+  channel: 256 + 4,096 characters plus one event's text.
+- **mask / block:** the last **256 characters** of each channel are held back and released as more text
+  arrives, and at the channel's end (its `content_block_stop`, `finish_reason`, `.output_text.done`,
+  `finishReason`, `done` line, or the end of the stream). A streamed reply's text therefore reaches the
+  client up to 256 characters (about 64 tokens) behind the provider; tool-call events are not delayed
+  beyond their own hold. Memory per channel: 256 + 256 characters plus one event's text, and at most one
+  event's data (up to 16 KiB) kept as the template for a flush event. Measured (Apple M5 Max, node 22, a
+  100 KB reply in 4-character pieces, built-in detectors): 0.2 µs per piece in report mode, 18 µs per
+  piece in mask / block mode, 20 µs with a tracked system prompt.
+- A match of at most 256 characters is found before any of it is passed on. A longer one (a PEM body, a
+  long JWT) can be found only after its start was passed on: the rest is still masked, or the stream
+  stopped, and the alert says `sent: "partial"`. **Text already sent on a stream cannot be recalled.**
+  Where the reply may carry long secrets, prefer `mask` (the remainder is still replaced) over relying on
+  `block`.
+- When a channel ends at an event that has no text of its own, the held text goes out in one flush event
+  just before it, in the API's own delta shape (Anthropic `content_block_delta`, an OpenAI chunk, a
+  Responses `response.output_text.delta` repeating the last delta's `sequence_number`, a Gemini chunk, an
+  Ollama line). OpenAI Responses repeats the complete text in `.output_text.done`, `.content_part.*`,
+  `.output_item.*` and the terminal response: each copy is scanned and masked whole.
+  The repeated number cannot be made fresh without renumbering every later event the provider already
+  numbered. The OpenAI Node SDK reads `sequence_number` only to skip events at or below a resume point
+  (openai 4.104.0 `lib/responses/ResponseStream.js`: `starting_after == null || event.sequence_number >
+  starting_after`), and a resumed stream (`GET …/responses/{id}?stream=true`) is not a parsed path here, so
+  a flush is not skipped by it; a client that requires strictly increasing numbers would see one repeat.
+- A re-serialized event or body keeps every number's source text (`json-lossless.mjs`): an integer past
+  2^53 in a function call's arguments beside the masked text (a Gemini chunk, an Ollama line) is written as
+  the provider sent it. String escapes and whitespace may differ from the provider's bytes; the values do
+  not. (The text change is not spliced into the original bytes.)
+- **report:** the kept tail is exactly the last 256 characters, so a match with spaces in it (a card or phone
+  number) across a 4,096-character batch boundary is found whole.
+- At most 64 channels per response. Past that, `mask` / `block` fail closed: the event that would open a
+  65th channel is refused before any of its text is taken — reported unevaluated, and under a closed fail
+  mode the stream is stopped (under `open`, that event goes out unscanned) — so no channel's text is ever
+  released inside another's. Report mode scans text past the cap in one shared channel.
+
+**The alert:** `category` "Model proxy: secret or credential in the model's reply" (or payment-card data,
+personal data; "Model proxy: system prompt reproduced in the model's reply"), `threatId`, `riskLevel` (the
+threat's, `Blocked` in block mode), `stage: "output"`, `tool: "model-proxy:response-text"`, `decision`
+(`deny` for a configured block, else `notify`), `responseScan: {class, mode, applied, sent}`, and
+`contentHash`: for a secret, the tenant-keyed hash of the matched text (for an echo, of the run's first
+keyed shingle), so the console can correlate it; **for a payment card (#90) or personal data (#15), an HMAC
+under a key random to this proxy process** (`proc:` and 16 hex), because those values come from small
+spaces (a card is 10^16 candidates less the Luhn check, a phone number 10^10) and the tenant-keyed hash
+could be enumerated back to the value by anyone holding the install token. The same card seen twice by one
+proxy process hashes alike; the console, another proxy or a restart cannot link or reverse it. Never the
+text, the match, the system prompt or a position. One alert per class and hash per response, at most 32.
+
+**Token log-probabilities.** In `mask` and `block` (enforce) the token log-probabilities a client can ask
+for are removed from every event and body, since they repeat the reply text token by token, held or masked
+text included: OpenAI Chat `choices[].logprobs` → `null`; Responses `logprobs` on text deltas, `.done`
+events and `output_text` parts → `[]`; Gemini `candidates[].logprobsResult` removed (`avgLogprobs` kept);
+Ollama `logprobs` removed. A client that asked for log-probabilities gets none while `responseScan` is
+`mask` or `block`; in report mode nothing is changed.
+
+**Not scanned:** reasoning returned beside the answer (Anthropic `thinking`, Gemini `thought` parts, Ollama
+`thinking`, Responses reasoning items), refusal fields, token log-probabilities in report mode (removed in
+mask / block, above), Anthropic `citations[].cited_text`, Gemini `executableCode` / `codeExecutionResult`
+parts, OpenAI `audio.transcript`, images and audio, and embeddings. A scan error is reported
+unevaluated; in mask / block mode under a closed fail mode the response is refused (502) or the stream
+stopped. Ollama `/api/generate` text is in addition still scanned report-only by every detector at stage
+`output` (see **Model text** above), so a finding there can raise both alerts.
+
+## Cloud file scanning
+
+Policy `fileScan` (`cli/file-scan-policy.mjs`) has the proxy check every inline file, document or image part of
+a parsed request with a cloud file-scanning provider before the request goes upstream. Two providers behind one
+interface (`lookup(sha256)`, `upload(bytes)`, `poll(id)`): **MetaDefender Cloud** (`cli/file-scan-metadefender.mjs`,
+API v4) and **VirusTotal** (`cli/file-scan-virustotal.mjs`, API v3). The scanner, cache, rate limit, decision and
+alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`.
+
+| Field | Values | Default |
+|---|---|---|
+| `provider` | `"metadefender"`, `"virustotal"` (anything else turns scanning off) | `"metadefender"` |
+| `mode` | `"off"`, `"hash"`, `"upload"` | `"off"` |
+| `onMalicious` | `"block"`, `"report"` | `"block"` |
+| `onUnknown` | `"allow"`, `"ask"`, `"block"` | `"allow"` |
+| `maxBytes` | largest file uploaded, 1 to 681574400 | 33554432 |
+| `timeoutMs` | the whole scan of one request's files, 100 to 120000 | 10000 |
+| `iocHash` | `true` adds a malicious file's raw SHA-256 to its alert | `false` |
+| `privateScan` | MetaDefender: `true` sends `samplesharing: 0` on upload | `false` |
+| `region` | MetaDefender regional endpoint by name: `us-west`, `eu-central`, `ca-central`, `ap-southeast`, `ap-northeast`, `ap-south`, `il-central` (never a URL) | MetaDefender Cloud's nearest (`api.metadefender.com`) |
+| `ratePerMinute` | provider requests per minute from this process, 1 to 10000 | 4 (VirusTotal), 60 (MetaDefender) |
+| `minEngines` | a clean verdict counts only from at least this many engines (VirusTotal: harmless + undetected + malicious + suspicious; MetaDefender: `total_avs`); fewer is unknown (`few-engines`), 1 to 1000 | 3 |
+
+**Parts read.** Every turn, any role (a conversation re-sends its earlier files; the cache answers those):
+
+| API | Parts |
+|---|---|
+| Anthropic Messages | `image` and `document` blocks with `source.type: "base64"`, also inside a `tool_result`'s content |
+| OpenAI Chat Completions | `image_url` with a `data:` URL, `file` with `file_data` (a `data:` URL), `input_audio` (`data`); any role, a `tool` message's content included |
+| OpenAI Responses | `input_image` (`image_url` `data:` URL) and `input_file` (`file_data`), in a message or a `function_call_output`; a `computer_call_output` screenshot (`output.image_url`) |
+| Anthropic Message Batches (`POST …/messages/batches`) | every `requests[].params` read as a Messages request |
+| Gemini `POST …/cachedContents` | read as a Gemini request (`contents`, `systemInstruction`) |
+| Gemini | `inlineData` in `contents[].parts[]`, `systemInstruction.parts[]` and every nested `functionResponse.parts[]` |
+| Ollama | `images[]` in `/api/chat` messages and `/api/generate`, under any key Go's `encoding/json` folds to `images` / `messages` (`Images`, `IMAGES`) |
+
+**Files the scan cannot read, and what happens to them** (all with `fileScan` on; `mode: "off"` changes nothing):
+
+| What | Handling |
+|---|---|
+| A file sent by reference: a URL (`image_url` / `file_url` `https://…`, an Anthropic `url` source, Gemini `fileData.fileUri`) or a provider file id (OpenAI `file_id`, Anthropic `source.type: "file"`) | not fetched; an alert (`why: "reference"`, keyed hash of the reference, never the reference) and `onUnknown` decides |
+| A `file_data` / `image_url` value that is neither a `data:` URL nor a URL (raw base64, a non-string), base64 that is not strict, a part nested past 16 levels | unscannable: an error, so the fail mode decides (open: `onUnknown`) |
+| A body on a parsed path with a `Content-Encoding` other than identity, or that is not a JSON object (a BOM, protobuf) | refused in enforce mode or under a closed fail mode; otherwise forwarded with an `UNEVALUATED_BAD_INPUT` alert (`model-proxy:file-scan-body`) |
+| Upload endpoints: Anthropic and OpenAI `…/files`, OpenAI `…/uploads` and `…/uploads/{id}/parts`, Gemini `/upload/…` media uploads, Gemini `:batchGenerateContent` | not read; refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-endpoint`) and forwarded. A file uploaded there and later used by id is a reference (above) |
+| Any other path the proxy does not parse, with a POST / PUT / PATCH body that is not JSON (multipart, binary, a content coding), or whose `Content-Type` is not `application/json` / `application/*+json` even if it parses as JSON | refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-unparsed`) and forwarded |
+| A request path with any `%` escape | refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-path`) and forwarded |
+| A file uploaded earlier and used only by id (OpenAI Batch input files, vector-store and Assistants attachments) | a reference where the request names it in a known shape; otherwise not seen |
+
+**Any JSON body, any path.** Every JSON request body, on a parsed path or not (`count_tokens`, Gemini `countTokens`
+including a nested `generateContentRequest`, Responses `input_tokens`, batches, an unknown route), is walked whole and
+every object tested against every API's file shapes above; a file found anywhere is scanned under the same rules.
+The walk stops at 64 levels or 200000 objects; past either the body is unscannable.
+
+**Paths.** With `fileScan` on, a path carrying any `%` escape is refused (enforce or closed fail mode) or alerted, never
+matched. Otherwise the path is normalised before it is matched and forwarded: dot segments resolved, duplicate slashes
+collapsed, a trailing slash removed, and the endpoint lists matched case-insensitively; the normalised path is exactly
+what goes upstream. So `/v1//files`, `/v1/files/` and `/V1/Files` are the Files API, and `/v1//messages/` is parsed and
+scanned as `/v1/messages`.
+
+An Anthropic `document` whose source is text is scanned as text, as before. At most 32 parts per request are
+scanned; the rest count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the
+scan runs before forwarding either way.
+
+**What is scanned is what is sent.** Four rules keep the bytes scanned and the bytes the provider reads the same:
+- *Key case.* Go's `encoding/json`, which Ollama is built on, matches an object key to a struct field ignoring
+  case, with Unicode simple folding (measured: `{"Images": …}`, `messages[].IMAGES`, `"imageſ"` and `"Messages"` all
+  reach Ollama's images; `"ımages"` does not). Ollama's `/v1/responses` decodes `input_image` / `input_file` parts
+  the same way. So every file field, in every API's shape and in the any-body walk, is read under any key that
+  folds to its name (a `type` value is still compared exactly). Two keys of one object that fold to the same field
+  are ambiguous (Go keeps the last one): refused in enforce mode or under a closed fail mode, otherwise forwarded
+  with a content-free `UNEVALUATED_BAD_INPUT` alert.
+- *Dual spellings.* Gemini's API is proto3 JSON, whose parsers take both `inlineData` and `inline_data` (likewise
+  `mimeType` / `mime_type`, `functionResponse` / `function_response`, `systemInstruction` / `system_instruction`).
+  Both are scanned; when both are present with different content the request is ambiguous: refused in enforce mode
+  or under a closed fail mode, otherwise forwarded with a content-free `UNEVALUATED_BAD_INPUT` alert.
+- *Strict base64.* A blob must be the standard alphabet (Gemini also the URL-safe one, which proto3 JSON accepts;
+  never both in one value), padding only at the end, a length that is a multiple of 4 once whitespace is removed,
+  and must re-encode to the same text. One that fails is **unscannable**: never clean, never looked up, decided as
+  an error (closed fail mode refuses; open applies `onUnknown`). A Gemini blob sent unpadded is valid to Gemini but
+  unscannable here.
+- *Duplicate keys.* With file scanning on, a request body that repeats a JSON key, or has keys that differ only in
+  case (Go's `encoding/json`, which Ollama uses, folds case), is a parser differential: a reader that keeps the first
+  occurrence could see a file the last-wins parse never did. It is refused (403, the provider's error shape) in
+  enforce mode or under a closed fail mode; otherwise it is forwarded re-serialised with a content-free
+  `UNEVALUATED_BAD_INPUT` alert.
+- *Re-serialised body.* With file scanning on, every parsed request body is forwarded as the parsed object
+  re-serialised (lossless numbers, `json-lossless.mjs`), file or not, so the value scanned is the only one sent.
+  With `mode: "off"` the body is forwarded byte for byte, as before.
+- *Depth.* Nested parts are read 16 levels deep (`tool_result` in `tool_result`, `functionResponse.parts`); a part
+  past that is recorded unscannable, not skipped.
+
+**What leaves the server.**
+
+| Mode | MetaDefender Cloud | VirusTotal |
+|---|---|---|
+| `off` | nothing | nothing |
+| `hash` | `GET /v4/hash/{sha256}` with the `apikey` header: the SHA-256 only | `GET /api/v3/files/{sha256}` with `x-apikey`: the SHA-256 only. VirusTotal documents that a queried indicator is added to its dataset |
+| `upload` | as `hash`, then for a hash the provider did not know and no larger than `maxBytes`: the file's bytes, `POST /v4/file` (a `filename` header), polled with `GET /v4/file/{data_id}`. By default MetaDefender Cloud may share the scan results with the security community; `privateScan: true` sends `samplesharing: 0` (a paid-licence feature: "All files scanned in private mode are not stored or shared") | as `hash`, then the file's bytes, multipart `POST /api/v3/files` (past 32 MB through the one-time `GET /files/upload_url`, accepted only on VirusTotal's own origin), polled with `GET /api/v3/analyses/{id}`. **Not private:** "Scanning reports produced by VirusTotal are shared with the public VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal customers" |
+
+The proxy never sends a provider the request's text, headers, model, or the client's own credentials.
+
+**Verdicts and decisions.**
+
+| Provider answer | Verdict |
+|---|---|
+| MetaDefender `scan_all_result_i` 1 (Infected), 8 (Skipped Infected), 27 / 28 (sandbox likely malicious / malicious); VirusTotal `last_analysis_stats.malicious` > 0 | malicious |
+| MetaDefender 0 (No Threats Found), 7 (Skipped Clean); VirusTotal no malicious or suspicious and at least one harmless or undetected | clean |
+| HTTP 404 (MetaDefender "The hash was not found", VirusTotal `NotFoundError`); suspicious only (MetaDefender 2, 18, 26; VirusTotal `suspicious` > 0); any other result code (failed, encrypted, archive limits, unsupported, empty); no engine verdict yet; over `maxBytes` in upload mode | unknown |
+| 429, MetaDefender 253 ("Not Scanned. Rate Limit Exceeded"), 401 / 403, any other error, the deadline, no key, past the 32-part cap, unscannable base64 | error |
+
+`onMalicious: "block"` refuses the request in `--mode enforce` (403, `x-moorai-model-proxy: refused`, the
+provider's name, the detection count and its threat name in the message); `"report"` forwards it with an alert.
+`onUnknown: "block"` refuses an unknown file; `"ask"` settles as a headless ask (deny unless the admin binding or
+policy says `headlessAsk: "allow-with-report"`). An error follows `failMode.modelProxy` (cli/fail-mode.mjs; the
+proxy's own fallback is closed in enforce, open in report): closed refuses with a content-free `FAIL_CLOSED` alert
+(`Fail-closed: file not scanned`); open treats the file as unknown. In report mode nothing is refused and the scan
+runs after the response, except under a closed fail mode, where the scan runs first and a file it could not scan
+is refused.
+
+**Keys.** Only from the root-owned admin binding (`/etc/moorai/config.json` `"fileScanKeys": {"metadefender": "…",
+"virustotal": "…"}`), then a key file per provider (`--file-scan-key-file metadefender=<path>`, first line, read only
+when root-owned and not group- or world-writable), then the environment (`MOORAI_METADEFENDER_API_KEY`,
+`MOORAI_VIRUSTOTAL_API_KEY`). A key in the policy is ignored. A key is sent only in the provider's header to the
+provider's base URL (fetch with `redirect: "error"`); it is never in an error, a log line, an alert or a refusal.
+
+**Cache, rate limit, deadline.** Verdicts are cached per process by provider, mode and SHA-256 (malicious and clean
+1 h, unknown 5 min, errors never; LRU of 4096); concurrent scans of one file share one query. Every lookup, upload
+and poll takes a token from the provider's per-minute bucket (`ratePerMinute`); a request with no token waits only
+if a token comes before the deadline and fewer than 32 requests wait, otherwise it is a rate-limit error at once.
+A provider 429 pauses that provider until its `X-RateLimit-Reset-In` / `Retry-After` (else 60 s). `timeoutMs`
+bounds the whole scan, waits and polls included. Documented limits: VirusTotal's public API, 4 requests per minute
+and 500 a day, not for commercial use; MetaDefender's throttling, 9 requests per hour on a free key, 75 / 150 / 500+
+per minute on standard / professional / enterprise licences (uploads and bulk lookups), daily limits per key.
+
+**Alerts.** One per file, verdict and decision per proxy process: `tool: "model-proxy:file-scan"`, stage `prompt`,
+`fileScan: { provider, verdict, mode, detections?, engines?, threat?, mimeClass, sizeBucket, uploaded, why? }`,
+`contentHash` the keyed hash of the SHA-256. A malicious file is threat #17 ("Dangerous links, files, or scripts",
+the catalogue's only threat about a dangerous file; ATLAS AML.T0011 User Execution) with `REASON` `FILE_SCAN`; an
+unknown or unscanned file is threat 0. The raw SHA-256 is added only for a malicious file with `iocHash: true`. A
+clean file raises nothing.
+
+**Not built.** Deep CDR (MetaDefender's sanitisation, `GET /v4/file/converted/{dataId}`) is not used. Files sent by
+reference are not fetched (they are alerted and `onUnknown` decides). Upload endpoints are refused or alerted, not
+scanned. Scan-before-embed for files (`/v1/index-scan`) is not wired.
 
 ## Report vs enforce
 
@@ -785,8 +1250,12 @@ The same applies to LM Studio (`http://127.0.0.1:1234/v1`), llama.cpp server (`h
 and vLLM (`http://127.0.0.1:8000/v1`). These ports are the projects' documented defaults, not tested here.
 
 Tested against a fake local server only: no auth header, the request path under `/v1`, and a whole tool call
-(id, name, all its arguments, `finish_reason`) in one chunk as well as a call fragmented across chunks. Not
-tested against a real Ollama, LM Studio, llama.cpp or vLLM build on `/v1`. From reading the code, not from a test: a server that streams several tool-call deltas
+(id, name, all its arguments, `finish_reason`) in one chunk as well as a call fragmented across chunks.
+Run live against Ollama 0.40.3 on `/v1` with `llama3.2:latest` (`scripts/server-conformance.mjs`,
+[docs/HOST_CONFORMANCE.md](../docs/HOST_CONFORMANCE.md)): JSON and SSE answers forwarded, a credential
+refused before the model, and the model's real tool call to a policy-blocked function withheld, in JSON and
+in SSE; the same on Ollama's Anthropic-compatible `/v1/messages` and native `/api/chat`. Not tested
+against LM Studio, llama.cpp or vLLM. From reading the code, not from a test: a server that streams several tool-call deltas
 with no `index` gets them merged into one call, whose arguments then fail to parse, which enforce mode denies
 rather than misreads.
 
@@ -906,8 +1375,64 @@ node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/mode
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
   test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \
   test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs \
-  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs
+  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs \
+  test/model-proxy-intent.test.mjs test/model-proxy-response-scan.test.mjs
+node --test --import ./test/hermetic-env.mjs test/file-scan-providers.test.mjs test/file-scan-core.test.mjs \
+  test/file-scan-proxy.test.mjs test/file-scan-parts.test.mjs test/file-scan-serve.test.mjs
 ```
+
+**Cloud file scanning.** `test/file-scan-*.test.mjs` run against fake MetaDefender Cloud and VirusTotal servers
+that answer in each provider's documented shapes (`test/file-scan-fakes.mjs`); no real API is called and no real
+key exists. Covered: response parsing for both providers, hash hit (blocked), clean (forwarded), unknown under
+each `onUnknown`, upload then poll to a verdict, a timeout and a 429 under each fail mode, the bounded rate-limit
+queue, the cache, that hash mode sends only `GET` by hash, that the key is in no log line, alert or error, every
+adapter's file part streaming and not, dual spellings, nested `functionResponse.parts`, strict base64 and the
+re-serialised body.
+
+**Intent alignment and reply text, exact coverage.** `test/model-proxy-intent.test.mjs` and
+`test/model-proxy-response-scan.test.mjs` run the proxy in process against the fake upstreams, for
+Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama (`/api/chat`, and `/api/generate` for
+reply text), streaming and not. Intent: a misaligned upload alerts (report) and is refused (`block`) or
+headless-asked (`ask`); an aligned one is delivered; a tool result, the text sent with it and the system
+prompt are never captured as the task; the session precedence and the header strip. The intent store there
+is a test double that honours `data/intent-server.mjs`'s contract (`model-proxy/test/fake-intent.mjs`); one
+test runs the real module, and `test/servers-intent-e2e.test.mjs` runs the proxy CLI on it end to end
+(host named in the user turn delivered, another host alerted or refused, a tool-result-only request
+task-unknown). Reply text: a secret, an email address, a
+card number and a system-prompt echo, each split across 7-character deltas and 5-byte network chunks, are
+each found; report forwards byte-identical, mask replaces the match (every repeated Responses copy too),
+block refuses with nothing of the match sent. Not tested: real providers and SDKs reading a masked or
+flushed event and a model that interleaves text across several Responses content parts or Gemini candidates.
+
+**Security-review hardening (v1.33.0), exact coverage.** `test/model-proxy-intent-review.test.mjs` (real
+`data/intent-server.mjs` store unless a test needs to see what was captured): a CLAUDE.md-style
+`<system-reminder>` naming a host does not align an upload to it (enforce + block refuses it; the same host
+in the person's words is delivered), in its own block, in the prompt's block, as string content and with a
+forged early close; every listed harness tag is stripped and an unclosed one runs to the end; label words
+only inside a reminder align none of credentials / destructive / mcp-write; a tool-less request captures
+nothing; `Bash {"cmd": …}` and `invoke {tool_name, args}` are refused as misaligned; a 4xx response captures
+nothing; gzip and BOM bodies are judged task-unknown; an upload to 127.0.0.1:8790 / localhost:8791 is
+refused as moorai-control even when the task names it; `--headless-ask pass-through` is refused.
+`test/intent-alignment-control.test.mjs`: the MoorAI ports equal the code's defaults, every form of a
+loopback control upload, never aligned, other loopback ports and GETs not risky, bare curl / wget hosts and
+flag values, and a 60,000-character command bounded. `test/model-proxy-reply-scan-review.test.mjs`: a card's
+and personal data's contentHash is none of the install-token-keyed hashes of the value's forms (enrolled
+runtime), stable within a process, different across two; mask removes log-probabilities on OpenAI Chat
+(both), Responses (both), Gemini (both) and Ollama (chat stream, generate body), and block lets not even the
+secret's first 7 characters out through them on the four streams; a 65th channel throws in mask / block and
+held text is released at the end; through the proxy a 66-choice masked stream is stopped; report mode finds
+a spaced card across the batch boundary; a masked Gemini chunk and a masked Ollama body keep
+`12345678901234567890` as sent. Commit-review follow-ups (the `R1`–`R4` tests in the same files): a command
+posting to 127.0.0.1:8790 and uploading to a remote host keeps the remote site as a target; a query straight
+after a bare host, `--url=`, any scheme, and unresolvable shell text (site `unknown`, never aligned); sixteen
+loopback spellings on a MoorAI port, with public and other-port controls and a bounded-time check;
+interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check; `R5` an interleaved or
+unclosed block, or a second block, followed by an upload host keeps only the text before the first tag (and
+the proxy refuses the upload); `R6` leading-zero MoorAI ports by URL, bare, `nc` and `socat`, a padded other
+port, and unreadable authorities as `unknown`; `R7` every loopback upload judged whatever the port (a
+20-digit zero-padded 8790, `localhost:5432`, `:3000`, an unreadable port, `nc` with a padded or non-numeric
+port, `socat`, `wget` to `0x7f.1`), the port only in the detail, a GET and the WSL share not judged. Each
+fix was mutated back and its test seen failing.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

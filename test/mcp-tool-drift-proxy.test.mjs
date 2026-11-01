@@ -168,7 +168,7 @@ test("BLOCK: a changed description is removed from tools/list, its call refused,
       await settle();
     } finally { await g.close(); }
     const q = con.alerts.filter((a) => a.decision === "quarantine" && a.reasonCode === "MCP_TOOL_DRIFT");
-    assert.ok(q.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.tool === "desktop:add"), JSON.stringify(con.alerts.map((a) => [a.category, a.decision])));
+    assert.ok(q.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.threatId === 25 && a.tool === "desktop:add"), JSON.stringify(con.alerts.map((a) => [a.category, a.decision])));
     assert.ok(!JSON.stringify(con.alerts).includes("credentials"), "alerts are content-free");
     // A fresh process (no in-memory state) is judged against the same, unmoved baseline.
     const g2 = startGuard({ home, url: con.url, toolBatches: [[ADD_DESC, ECHO]], recvLog: log });
@@ -312,7 +312,7 @@ test("ALERT (default): drift and an added tool change nothing on the wire — by
       await settle();
     } finally { await g.close(); }
     assert.deepEqual(called(log), ["add", "run_shell"]);
-    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.decision === "notify"));
+    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.threatId === 25 && a.decision === "notify"));
     assert.ok(!con.alerts.some((a) => a.decision === "quarantine" || a.category === "MCP: tool added after approval" || a.reasonCode === "MCP_TOOL_DRIFT"));
     assert.equal(con.toolReports.length, 0, "alert mode posts no fingerprint report");
   });

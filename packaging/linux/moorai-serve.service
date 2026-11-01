@@ -1,0 +1,18 @@
+# systemd user unit: moorai-serve, the MoorAI engine as a loopback HTTP sidecar (127.0.0.1:8790) for agent
+# loops that are not Claude Code (OpenAI Agents SDK, LangGraph, CrewAI, a custom loop).
+# Installed disabled. Enable per user:  systemctl --user enable --now moorai-serve.service
+[Unit]
+Description=MoorAI engine sidecar (moorai-serve, loopback only)
+Documentation=https://github.com/gitayg/moorai#install
+ConditionPathExists=/usr/lib/moorai/cli/moorai-serve.mjs
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/moorai/linux/moorai-node /usr/lib/moorai/cli/moorai-serve.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

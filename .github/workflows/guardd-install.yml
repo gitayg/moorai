@@ -18,8 +18,10 @@ name: guardd-install
 #   user with `sudo -n -u "$TEST_USER" -H ...`; on Windows with the $env:TEST_USER / $env:TEST_PASS
 #   credential. TEST_USER is created and proven non-admin before anything is installed.
 #
-# Until a script exists its install step SKIPS with a ::notice:: and the job stays green; the user creation,
-# release build and run-as-test-user plumbing run regardless, so they are proven before the scripts land.
+# Until a script exists AND the helper can start on that OS (scripts/guardd-ci-ready.mjs: no todo!() or
+# unimplemented!() left in the code compiled for it; on Windows an SCM dispatcher in main.rs), the install
+# and agent-side steps SKIP with a ::notice:: and the job stays green; the user creation, release build and
+# run-as-test-user plumbing run regardless, so they are proven before the helper lands.
 
 on:
   workflow_dispatch:
@@ -28,6 +30,7 @@ on:
       - "guardd/**"
       - "test/fixtures/guardd/**"
       - ".github/workflows/guardd-install.yml"
+      - "scripts/guardd-ci-ready.mjs"
 
 concurrency:
   group: guardd-install-${{ github.ref }}
@@ -56,17 +59,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check for install script
+      # Ready = the install script exists AND the helper can start on this OS: no todo!()/unimplemented!()
+      # left in the code compiled for it (scripts/guardd-ci-ready.mjs). Until then the install would only
+      # prove that a stub panics, so those steps skip with a ::notice:: and the job stays green.
+      - name: Check whether the helper can be installed
         id: gate
-        run: |
-          script="guardd/packaging/${{ matrix.platform }}/install.sh"
-          if [ -f "$script" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "install script: $script"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=guardd-install skipped::$script does not exist yet; the install and agent-side test steps are skipped until the ${{ matrix.platform }} platform agent adds it."
-          fi
+        run: node scripts/guardd-ci-ready.mjs ${{ matrix.platform }}
 
       - name: Create unprivileged test user (Linux)
         if: runner.os == 'Linux'
@@ -146,17 +144,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check for install script
+      # Same gate as the Unix jobs; on Windows main.rs must also dispatch to the SCM.
+      - name: Check whether the helper can be installed
         id: gate
-        run: |
-          $script = 'guardd/packaging/windows/install.ps1'
-          if (Test-Path $script -PathType Leaf) {
-            "ready=true" >> $env:GITHUB_OUTPUT
-            "install script: $script"
-          } else {
-            "ready=false" >> $env:GITHUB_OUTPUT
-            "::notice title=guardd-install skipped::$script does not exist yet; the install and agent-side test steps are skipped until the Windows platform agent adds it."
-          }
+        run: node scripts/guardd-ci-ready.mjs windows
 
       # A standard (Users-group) local account. The password is random per run and masked in the log.
       - name: Create standard test user

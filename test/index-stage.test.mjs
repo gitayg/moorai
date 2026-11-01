@@ -157,7 +157,9 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   // session start is where the measured "clone this repository instead of the registry package" text sat.
   assert.deepEqual(scoped.sort(), [
     "cloak-ai-audience", "hidden-zero-width-interleave", "ingest-agent-directed", "inj-self-replication", "inj-untrusted-directive", "install-path-steering", "link-assistant-prefill",
-    "mcp-hidden-canary", "mcp-tool-poisoning", "memory-poisoning", "obf-rendered-hidden", "rag-poisoning", "recon-agent-capabilities"
+    "mcp-hidden-canary", "mcp-tool-poisoning", "memory-poisoning", "obf-rendered-hidden", "rag-poisoning", "recon-agent-capabilities",
+    // the five skill / instruction-file hiding detectors (data/detectors-skill-hiding.js) judge the auto-loaded files too
+    "skill-conceals-from-user", "skill-hidden-html-instructions", "skill-padded-hidden-content", "skill-persists-to-memory", "skill-targets-reviewers"
   ]);
 });
 

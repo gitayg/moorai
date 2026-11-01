@@ -90,6 +90,7 @@ test("MCP server not on the allow-list: alert, audit row and ledger row all say 
   const r = await once(policy, pre("mcp__evil__exfil", { q: "x" }));
   assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
   assert.equal(r.alerts.find((x) => x.category === "MCP: unapproved server").reasonCode, "MCP_SERVER_NOT_ALLOWED");
+  assert.equal(r.alerts.find((x) => x.category === "MCP: unapproved server").threatId, 25, "the deny is attributed to #25");
   const au = audit(r.sb).find((x) => x.category === "MCP tool call");
   assert.deepEqual([au.decision, au.reasonCode, au.enforcement, au.policyId], ["deny", "MCP_SERVER_NOT_ALLOWED", "AS_CONFIGURED", policyIdOf(policy)]);
   assert.equal(lastRow(r.sb).reasonCode, "MCP_SERVER_NOT_ALLOWED");

@@ -7,10 +7,13 @@ name: ci
 # scripts/benchmark.mjs printing red misses and exiting 0, corpus scorers pinning moved matchers.
 # A correct exit code nobody reads is not a gate. This workflow reads them.
 #
-# ORDER IS DELIBERATE: cheapest first. Every gate above `node --test` runs in under 4 seconds, so a
-# break surfaces in ~10s of runner time instead of after the ~80s unit suite. Everything lives in ONE
-# job because the whole thing is ~2 minutes — splitting would cost more in checkout/setup than it saves,
-# and a 40-minute PR gate is a gate people disable.
+# ORDER IS DELIBERATE: cheapest first. Every gate in `gates` runs in under 4 seconds, so a break
+# surfaces in ~10s of runner time. The unit suite runs beside it in `unit`, four shards in parallel.
+# It no longer fits one job: by v1.38 it ran 13-15 minutes at --test-concurrency=4 on this 4-vCPU runner
+# and hit the job's 15-minute timeout on every push from v1.38.0 to v1.40.2. With every core busy, a
+# different few of its ~60 wall-clock budgets missed on each run. Four shards at concurrency 2 leave
+# cores free for the node processes the hook tests spawn, and each shard takes about a quarter of the
+# time, so the timeout is a hang detector again.
 #
 # CI AND `npm test` MUST NOT DRIFT. Every command whose exact form matters — the unit-test glob and
 # concurrency, the two pinned scorer thresholds, the timestamp-tolerant docs diff — lives in ONE place,
@@ -50,16 +53,6 @@ jobs:
       # a release tool. Installing would add ~30s to every PR to satisfy nothing. If a gate ever
       # grows a third-party import it will fail loudly with ERR_MODULE_NOT_FOUND, which is the
       # correct way to discover that this comment went stale.
-
-      # Enumeration is a plain glob over test/*.test.mjs, so a NEW test file is picked up with no
-      # edit here. That is the point: a hand-maintained list is how a suite quietly stops covering
-      # its newest tests. This step prints the count and the names so the log shows what ran.
-      - name: Enumerate unit test files
-        run: |
-          ls test/*.test.mjs
-          n=$(ls test/*.test.mjs | wc -l)
-          echo "unit test files: $n"
-          [ "$n" -gt 0 ] || { echo "::error::no test/*.test.mjs matched — the glob or the directory moved"; exit 1; }
 
       # --- Sub-second harnesses: fail here and the runner has burned ~20 seconds. ---
 
@@ -121,14 +114,37 @@ jobs:
       - name: Precision / recall thresholds
         run: npm run test:scorers
 
-      # --- Unit suite, last because it is the long pole (~95s of the ~2min total) ---
-      #
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Enumeration is a plain glob over test/*.test.mjs, so a NEW test file is picked up with no
+      # edit here. That is the point: a hand-maintained list is how a suite quietly stops covering
+      # its newest tests. This step prints the count and the names so the log shows what ran.
+      # node's --test-shard splits that same glob, so every file lands in exactly one shard.
+      - name: Enumerate unit test files
+        run: |
+          ls test/*.test.mjs
+          n=$(ls test/*.test.mjs | wc -l)
+          echo "unit test files: $n"
+          [ "$n" -gt 0 ] || { echo "::error::no test/*.test.mjs matched — the glob or the directory moved"; exit 1; }
+
       # NEVER run `node --test` with no arguments. Node's default patterns include `**/test-*.mjs`,
       # which matches mcp-proxy/test-fake-mcp-server.mjs — a stdio JSON-RPC server that reads stdin
       # forever and never exits. Measured: a bare `node --test` was still running after 241 seconds
       # having reported exactly one file. The explicit `test/*.test.mjs` glob terminates in ~95s.
       #
-      # --test-concurrency is pinned so the run does not vary with the runner's core count.
+      # --test-concurrency is pinned so the run does not vary with the runner's core count: 2 per shard here
+      # (package.json test:unit:shard), 4 in a local `npm run test:unit`.
       #
       # THE LOAD SENSITIVITY NOTED HERE IS GONE, and pinning concurrency was never enough to fix it.
       # test/detector-hardening.test.mjs used to require a normalization pre-pass to finish "well under
@@ -144,5 +160,7 @@ jobs:
       # and cli/state-dirs.mjs resolved a state directory from it. That was a product bug, fixed in
       # state-dirs.mjs; test/hermetic-env.mjs (preloaded by `npm run test:unit`) additionally clears the
       # base-directory variables so a sandboxed HOME really is the whole sandbox.
-      - name: Unit tests
-        run: npm run test:unit
+      - name: Unit tests (shard ${{ matrix.shard }} of 4)
+        run: npm run test:unit:shard
+        env:
+          MOORAI_TEST_SHARD: ${{ matrix.shard }}/4

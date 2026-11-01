@@ -18,6 +18,9 @@ pub const MAX_SUBMIT_ALERTS: usize = 64;
 /// check + `hello` round trip.
 pub const CONNECT_BUDGET_MS: u64 = 50;
 pub const OP_TIMEOUT_POLICY_MS: u64 = 50;
+/// A `policy` request whose held answer is stale for its actor makes the helper fetch on demand, bounded
+/// by ON_DEMAND_FETCH_MS; the hook's budget for such a request is this.
+pub const OP_TIMEOUT_POLICY_FETCH_MS: u64 = 1300;
 pub const OP_TIMEOUT_SUBMIT_MS: u64 = 250;
 pub const OP_TIMEOUT_CALL_MS: u64 = 20;
 pub const OP_TIMEOUT_KILL_MS: u64 = 50;

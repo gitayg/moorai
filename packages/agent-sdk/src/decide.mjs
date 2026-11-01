@@ -13,7 +13,7 @@
 //
 // WHAT IS NOT HERE — the hook steps that need per-session state on disk or a network lookup, listed in
 // NOT_EVALUATED and returned on every result so a caller can see them: the runaway circuit breaker,
-// session-risk escalation, cumulative deletion volume, intent alignment, learned drift, MCP server
+// session-risk escalation, cumulative deletion volume, learned drift, MCP server
 // reputation, model escalation, honeytokens and the mask rewrite (a "mask" policy resolves to its
 // fallback here, as threatActionFor does for every caller that cannot rewrite). Also not here, by design:
 // the hook's transit check on the AGENT'S OWN environment ("transit-env", #67 transitEnvStep). The hook
@@ -28,19 +28,23 @@
 // containmentClaudeCode "wrap" rewrites a Bash call through updatedInput, which this runtime cannot do
 // ("mask-rewrite"). Neither is a function of the call, and an SDK host is neither of those CLIs. The pure
 // decision (containmentDecision) is shared code the hook imports; off Windows both are inert in the hook too.
+// Intent alignment is NOT in NOT_EVALUATED: it needs the session's task, so src/runtime.mjs judges it around
+// this function (data/intent-server.mjs, in memory), as the hook's intentStep runs after its branch verdict.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
-import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
+import { hookCore, mcpFileArgs, secretEgress, secretLearnLib, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
 
 const {
   decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, decideAuthorizedKeysWrite, isEnvTemplate, fileScanText,
   decodedCommandPayloads, decideTransit, decideThreat,
-  decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor,
+  decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor, decideMcpToolClass,
   saferAlternativesFor, PS_OUTBOUND_UPLOAD, evaluateProfile, rejectedAlert, readRootOwned
 } = hookCore;
 const { systemConfigPath } = serverModeLib;
 const { scanMcpFileArgs } = mcpFileArgs;
-const { egressHits } = secretEgress;
+const { egressMatches, secretEgressVerdict, unverifiedLevel } = secretEgress;
+const UNVERIFIED_REASON = "outbound content MoorAI could not check for a tracked secret";
+const { learnableSecrets, isCredentialPath, LEARN_TOTAL } = secretLearnLib;
 const { extractHosts } = modelEndpoints;
 const { OUTBOUND_UPLOAD } = outboundUpload;
 const { callTags, tagGate, applyTagGate, tagHitAlert } = toolTagsLib;
@@ -51,11 +55,20 @@ export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {
   try { if (!fp) return ""; return fileScanText(readFileSync(fp).subarray(0, FILE_CAP)); } catch { return ""; }
+}
+// The file's head for the scan, and what #65 learns from: the whole file up to LEARN_TOTAL (`truncated` past it).
+function readFileForLearn(fp) {
+  try {
+    if (!fp) return { text: "", learn: { text: "", truncated: false } };
+    const buf = readFileSync(fp);
+    const text = fileScanText(buf.subarray(0, FILE_CAP));
+    return { text, learn: buf.length > FILE_CAP ? { text: fileScanText(buf.subarray(0, LEARN_TOTAL)), truncated: buf.length > LEARN_TOTAL } : { text, truncated: false } };
+  } catch { return { text: "", learn: { text: "", truncated: false } }; }
 }
 function agentPath(p, cwd) {
   if (typeof p !== "string" || !p || isAbsolute(p) || p.startsWith("~") || typeof cwd !== "string" || !cwd) return p;
@@ -81,14 +94,18 @@ function envelopeBlocks(policy, ctx, actor, stage, signals) {
   signals.push({ threatId: 64, category: "Agent entitlement drift", riskLevel: mode === "block" ? "Blocked" : "High", stage, key: `drift:${d.reasons.join("|")}`, driftReasons: d.reasons });
   return mode === "block";
 }
-function secretEgressBlocks(policy, text, cwd, stage, signals) {
+// #65 as the hook's checkSecretEgress: local secrets raw or encoded, plus — at an egress sink, when the
+// caller passes one — the secrets its tracker learned from tool results (cli/secret-taint.mjs).
+// Returns "deny" | "ask" | false, as the hook's checkSecretEgress; `admin` is the root-owned admin binding.
+function secretEgressBlocks(policy, text, cwd, stage, signals, tracker = null, admin = null) {
   try {
-    const hits = egressHits(text, cwd);
-    if (!hits.length) return false;
-    const act = threatActionFor(policy, 65);
-    const block = act === "block" || act === "kill";
-    signals.push({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, key: `egress:${hits.join(".")}` });
-    return block;
+    const r = egressMatches(text, cwd, { tracker });
+    if (!r.matches.length) return false;
+    const hits = [...new Set(r.matches.map((m) => m.hash))];
+    const v = secretEgressVerdict(r.matches, { action: threatActionFor(policy, 65), level: unverifiedLevel(policy, admin) });
+    const block = v === "deny";
+    signals.push({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : v === "ask" ? "High" : "Critical", stage, key: `egress:${hits.join(".")}`, secretEgress: r.matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })) });
+    return v === "deny" || v === "ask" ? v : false;
   } catch { return false; }
 }
 function endpointSignal(epD, signals) {
@@ -144,7 +161,7 @@ export function decideToolCall(engine, policy, opts = {}) {
   } catch { /* tags are a policy layer; a failure leaves the branch verdict */ }
   return v;
 }
-function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "", serviceId = "", systemConfig } = {}) {
+function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "", serviceId = "", systemConfig, secretTracker = null } = {}) {
   const tool = TOOL_ALIASES[rawTool] || String(rawTool || "");
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
   const base = cwd || process.cwd();
@@ -154,8 +171,12 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
   if (wp.decision === "deny") return out("deny", wp.reason, [], [], { ...(wp.profile ? { profileId: wp.profile.id } : {}), driftKinds: wp.kinds, reasonCode: wp.reasonCode });
 
   if (tool === "Read") {
-    const text = readFileCapped(agentPath(ti.file_path, cwd));
-    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
+    const rd = readFileForLearn(agentPath(ti.file_path, cwd));
+    const text = rd.text;
+    // #65, as the hook's Read branch: a secret in the file joins the caller's session-read set; a file whose
+    // secrets could not all be learned holds the session as unverified.
+    if (secretTracker && secretTracker.learn) { try { const cred = isCredentialPath(ti.file_path); const r = learnableSecrets(rd.learn.text, { kv: cred }); const cut = rd.learn.truncated || r.truncated; if (r.values.length || cut) secretTracker.learn(r.values, "Read", cred, cut); } catch { /* evidence only */ } }
+    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), scope: "tool-result" } });
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);
     if (pd.kill) { d.kill = true; d.killIds.push(...pd.killIds); }
@@ -183,11 +204,11 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
     };
     for (const p of readPaths) {
-      merge(decideText(engine, policy, readFileCapped(agentPath(p, cwd)), "file", { ctx: { template: isEnvTemplate(p), egress: uploading } }));
+      merge(decideText(engine, policy, readFileCapped(agentPath(p, cwd)), "file", { ctx: { template: isEnvTemplate(p), egress: uploading, scope: "tool-result" } }));
       merge(decideFileMetadata(engine, policy, agentPath(p, cwd)));
       if (ps) merge(decideCredFileRead(engine, policy, p));
     }
-    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
+    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
     // Base64/hex payloads the command decodes straight into a shell (T1027.010), as the hook adds them to
     // the scripts it re-scans: a pure function of the command, so decided here exactly as there.
     const scripts = decodedCommandPayloads(command);
@@ -199,10 +220,10 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (trD.decision === "deny" && dec !== "deny") { dec = "deny"; reasons = [trD.reason]; alts = saferAlternativesFor([67]); }
       else if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
     }
-    for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
+    for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, ti.command, cwd, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
+    { const sv = secretEgressBlocks(policy, ti.command, cwd, "egress", signals, cmdEgress ? secretTracker : null, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }
     if (envelopeBlocks(policy, { tool: "Bash", paths: readPaths }, actor, "file", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, tagged(finds, "file"), { kill: killIds.length > 0, killIds });
   }
@@ -223,7 +244,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
     const epD = decideEndpoints(policy, text);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, text, cwd, "file", signals) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }
+    if (secretEgressBlocks(policy, text, cwd, "file", signals, null, systemConfig) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }
     if (envelopeBlocks(policy, { tool, paths: [path] }, actor, "file", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} ${tool} of ${basename(path || "file")} — ${reasons.join(", ")}`, alts, tagged(d.findings, "output"), { kill: d.kill, killIds: d.killIds });
   }
@@ -235,7 +256,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     let dec = d.decision, reasons = d.reasons.slice(), alts = d.alternatives;
     const epD = decideEndpoints(policy, url);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, `${url}\n${prompt}`, cwd, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
+    { const sv = secretEgressBlocks(policy, `${url}\n${prompt}`, cwd, "egress", signals, secretTracker, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }
     if (envelopeBlocks(policy, { tool: "WebFetch" }, actor, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} WebFetch — ${reasons.join(", ")}`, alts, tagged(d.findings, "egress"), { kill: d.kill, killIds: d.killIds });
   }
@@ -249,11 +270,19 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     if (envelopeBlocks(policy, { tool, mcpServer: server }, actor, "egress", signals)) return out("deny", `${tool} — out-of-envelope MCP server`, saferAlternativesFor([64]), []);
     const epD = decideEndpoints(policy, args);
     if (epD.decision === "deny") { endpointSignal(epD, signals); return out("deny", epD.reason, saferAlternativesFor([63]), []); }
-    if (secretEgressBlocks(policy, args, cwd, "egress", signals)) return out("deny", `${tool} — local secret egress`, saferAlternativesFor([65]), []);
+    const secretV = secretEgressBlocks(policy, args, cwd, "egress", signals, secretTracker, systemConfig);
+    if (secretV === "deny") return out("deny", `${tool} — local secret egress`, saferAlternativesFor([65]), []);
     const fsr = scanMcpFileArgs(engine, policy, { tool, args: ti, bases: [typeof cwd === "string" && cwd ? cwd : base], argIds: g.findings.map((f) => f.threatId) });
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
+    if (secretV === "ask" && g.decision === "allow") { g.decision = "ask"; g.reason = `${tool} — ${UNVERIFIED_REASON}`; g.alternatives = saferAlternativesFor([65]); }
+    // The hook's class default (policy.mcpToolClassDefaults): by override or name, merged by rank.
+    const tc = decideMcpToolClass(policy, { tool, server });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) {
+      g.decision = tc.decision; g.reason = tc.reason; g.alternatives = [];
+      signals.push({ threatId: 0, category: tc.decision === "deny" ? "MCP: tool blocked by class default" : "MCP: tool held by class default", riskLevel: tc.decision === "deny" ? "Blocked" : "Medium", stage: "mcp", key: `mcp-class:${tc.toolClass}:${tool}` });
+    }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; }
     const reasons = g.reason ? [g.reason] : [];

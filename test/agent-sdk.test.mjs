@@ -39,13 +39,13 @@ const decisionOf = (o) => (o.hookSpecificOutput && o.hookSpecificOutput.permissi
 
 test("moorAIHooks returns the SDK's hooks record: event -> HookCallbackMatcher[] with async callbacks; allow is {}", async () => {
   const hooks = moorAIHooks({ policy: { captureTier: "content-free" } });
-  assert.deepEqual(Object.keys(hooks).sort(), ["PostToolUse", "PreToolUse", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(hooks).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
   for (const k of Object.keys(hooks)) {
     assert.ok(Array.isArray(hooks[k]) && hooks[k].length === 1);
     assert.equal(typeof hooks[k][0].hooks[0], "function");
     assert.equal(hooks[k][0].matcher, undefined, "no matcher: every tool, as the hook's matcher set plus the unknown-tool allow");
   }
-  assert.deepEqual(JSON.parse(JSON.stringify(hooks)), { PreToolUse: [{ hooks: [null] }], PostToolUse: [{ hooks: [null] }], UserPromptSubmit: [{ hooks: [null] }] }, "nothing but matchers is enumerable");
+  assert.deepEqual(JSON.parse(JSON.stringify(hooks)), { PreToolUse: [{ hooks: [null] }], PostToolUse: [{ hooks: [null] }], PostToolUseFailure: [{ hooks: [null] }], UserPromptSubmit: [{ hooks: [null] }] }, "nothing but matchers is enumerable");
   assert.deepEqual(await call(hooks, "PreToolUse", pre("Bash", { command: "ls -la src" })), {});
   // A callback registered under the wrong event answers {} rather than misreading the input.
   assert.deepEqual(await call(hooks, "PreToolUse", { hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {}, tool_response: "x" }), {});
@@ -107,6 +107,20 @@ test("reporting is content-free and carries the workload identity, keyed by the 
   assert.ok(c.alerts().some((a) => a.threatId === 39 && a.tool === "hook:UserPromptSubmit"), "the prompt finding was reported");
 });
 
+test("#90: a card number's alert carries a process-keyed hash, never the number or its install-token-keyed hash; #1's block still covers it", async () => {
+  const c = fakeConsole();
+  const hooks = moorAIHooks({ console: c.console, fetch: c.fetch, fetchPolicy: false, policy: { captureTier: "full-capture", threatPolicy: { 1: "block" } } });
+  const PAN = "4111 1111 1111 1111";
+  const o = await call(hooks, "PreToolUse", pre("Bash", { command: `printf 'card ${PAN}' >> notes.txt` }));
+  assert.equal(decisionOf(o), "deny", JSON.stringify(o));
+  await hooks.moorai.flush();
+  const card = c.alerts().filter((a) => a.threatId === 90);
+  assert.ok(card.length >= 1, JSON.stringify(c.alerts().map((a) => a.threatId)));
+  for (const a of card) assert.match(a.contentHash, /^proc:[0-9a-f]{16}$/);
+  const tenant = (s) => hashWithKey(deriveKey(TOKEN), s);
+  for (const b of c.bodies) for (const x of [PAN, PAN.replace(/\D/g, ""), tenant(PAN), tenant(PAN.replace(/\D/g, ""))]) assert.ok(!b.body.includes(x), `${x} in ${b.body}`);
+});
+
 test("no install token: nothing is posted, enforcement still applies", async () => {
   let fetched = 0;
   const hooks = moorAIHooks({ console: { serverUrl: "http://console.invalid" }, fetch: async () => { fetched++; return { ok: true }; }, fetchPolicy: false });
@@ -120,10 +134,12 @@ test("one runtime per moorAIHooks(): built on the first callback and reused, no 
   const hooks = moorAIHooks({});
   const a = hooks.moorai.runtime(), b = hooks.moorai.runtime();
   assert.equal(a, b);
-  const t0 = performance.now();
+  // CPU time, not wall clock (test/timing.mjs): a contended runner stretches the wall clock, not the work.
+  const c0 = process.cpuUsage();
   for (let i = 0; i < 200; i++) await call(hooks, "PreToolUse", pre("Bash", { command: `echo ${i}` }));
-  const per = (performance.now() - t0) / 200;
-  assert.ok(per < 20, `per-call ${per.toFixed(2)} ms — a spawned process costs ~100 ms`);
+  const d = process.cpuUsage(c0);
+  const per = (d.user + d.system) / 1000 / 200;
+  assert.ok(per < 20, `per-call ${per.toFixed(2)} ms of CPU — a spawned process costs ~100 ms`);
 });
 
 test("kill: a policy 'kill' denies the call and ends the run (continue: false)", async () => {

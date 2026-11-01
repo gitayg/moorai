@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.586Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "host",
+      "id": "copilot",
+      "label": "GitHub Copilot CLI",
+      "version": null,
+      "tested": "1.0.63",
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "not-installed"
+    }
+  ],
+  "reasons": {
+    "not-installed": "not installed on the machine that ran the tier"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "e26ee2e55487079763f78432742118a5150da401e93c5b9b90d2327a77641827",
+    "sig": "MRWdl7Us5H4VNghO0NcqoiPr70VC7PtBChsLzAJXcc6IPjulKNvElccaHbyrDVTryN0Xxl+CHDTq3Ig5UPz+Dg==",
+    "ephemeral": false
+  }
+}

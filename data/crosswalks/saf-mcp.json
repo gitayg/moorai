@@ -951,22 +951,27 @@
         "reputation-cli",
         "repo-link",
         "det-pkg-install",
-        "det-typosquat"
+        "det-typosquat",
+        "pkg-known-bad",
+        "mcp-package-policy"
       ],
-      "limit": "MCP server packages scored at first launch (provenance, repository link, install scripts) and install commands; artifact signatures are not verified, and reputation reports unless mcpReputation.blockBelow is set"
+      "limit": "MCP server packages scored at first launch and held by mcpPackagePolicy (unpinned, off the org pin, critical check failed); listed compromised releases denied at install and launch; artifact signatures are not verified and an unlisted compromise passes"
     },
     {
       "id": "SAF-T1003",
       "status": "partial",
       "threats": [
-        25
+        25,
+        57
       ],
       "evidence": [
         "reputation",
         "reputation-cli",
-        "server-allow"
+        "server-allow",
+        "mcp-package-policy",
+        "pkg-known-bad"
       ],
-      "limit": "known-malicious and typosquatted names and opt-in catalogue verdicts at first launch, plus the server allow-list; a new malicious package with a clean name scores good"
+      "limit": "known-malicious and typosquatted names and opt-in catalogue verdicts at first launch, plus the server allow-list; a new malicious package with a clean name scores good; a listed compromised release is refused at launch by default, and a typosquatted or known-malicious name is held under mcpPackagePolicy"
     },
     {
       "id": "SAF-T1005",
@@ -1005,17 +1010,21 @@
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "MoorAI is not in the OAuth authorization flow"
+      "reason": "the authorization URL is built by the client and opened in a browser; it never passes through the MCP gateway"
     },
     {
       "id": "SAF-T1207",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25,
+        57
+      ],
       "evidence": [
         "reputation-cli",
-        "tool-drift"
+        "tool-drift",
+        "mcp-package-policy"
       ],
-      "limit": "a new version is re-scored and its tool listing compared with the baseline; the update channel itself is not verified"
+      "limit": "a new version is re-scored, its tool listing compared with the baseline, and held when it is not the org's pinned version (mcpPackagePolicy pins); the update channel itself is not verified"
     },
     {
       "id": "SAF-T1008",
@@ -1047,10 +1056,13 @@
     },
     {
       "id": "SAF-T1009",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "MoorAI is not in the OAuth authorization flow"
+      "evidence": [
+        "oauth-as-check",
+        "http-gateway"
+      ],
+      "limit": "with mcpOAuth.authServer block the gateway does not serve protected-resource metadata naming an authorization server whose RFC 8414 issuer differs from its identifier, and it reports a token whose iss is not among the remote's authorization servers; off by default; the browser response and the client's per-request issuer binding are not seen"
     },
     {
       "id": "SAF-T1102",
@@ -1080,10 +1092,15 @@
     },
     {
       "id": "SAF-T1105",
-      "status": "not-covered",
-      "threats": [],
-      "evidence": [],
-      "reason": "no check compares a path argument with the server's configured file scope"
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "mcp-scope",
+        "stdio-proxy"
+      ],
+      "limit": "a path argument outside the server's declared scope (signed-policy roots, or a filesystem server's client roots or launch directories); a server with no declared scope, a docker-run server and hard links are not judged"
     },
     {
       "id": "SAF-T1106",
@@ -1120,7 +1137,9 @@
     {
       "id": "SAF-T1201",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-drift-block",
@@ -1133,7 +1152,7 @@
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "MoorAI does not see OAuth refresh-token use"
+      "reason": "refresh tokens are used at the authorization server's token endpoint, not through the MCP gateway"
     },
     {
       "id": "SAF-T1203",
@@ -1184,10 +1203,13 @@
     },
     {
       "id": "SAF-T1304",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "credentials a server forwards downstream are not seen"
+      "evidence": [
+        "oauth-token",
+        "http-gateway"
+      ],
+      "limit": "the gateway, as the intermediary, reports or by policy refuses relaying a client token across a resource boundary (audience, cross-origin reuse); credentials a remote server forwards downstream are not seen"
     },
     {
       "id": "SAF-T1303",
@@ -1208,19 +1230,24 @@
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "the initiating principal's identity is not carried through an intermediary"
+      "reason": "the initiating principal's identity is not carried through an intermediary; the MCP gateway's audience check keeps a token issued for one gateway route off another route's upstream only under audience block"
     },
     {
       "id": "SAF-T1308",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "token audience and scope are not inspected"
+      "evidence": [
+        "oauth-token",
+        "http-gateway"
+      ],
+      "limit": "the MCP gateway reports, and under mcpOAuth audience block refuses, a JWT whose audiences name neither the route's remote, the gateway route nor an admin-listed audience, and reports or refuses scopes outside mcpOAuth.scopes; JWT claims read unverified, opaque tokens get no audience or scope verdict"
     },
     {
       "id": "SAF-T1406",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-identity"
@@ -1230,7 +1257,9 @@
     {
       "id": "SAF-T1401",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-drift-block"
@@ -1268,7 +1297,9 @@
     {
       "id": "SAF-T1405",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift-block",
         "tool-identity"
@@ -1277,10 +1308,13 @@
     },
     {
       "id": "SAF-T1408",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "MoorAI is not in the OAuth authorization flow"
+      "evidence": [
+        "oauth-as-check",
+        "http-gateway"
+      ],
+      "limit": "with mcpOAuth.authServer block the gateway does not point a client at an authorization server whose metadata lacks S256 PKCE; off by default; the PKCE parameters actually sent go client to authorization server and are not seen"
     },
     {
       "id": "SAF-T1407",
@@ -1359,7 +1393,7 @@
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "MoorAI is not in the OAuth authorization flow"
+      "reason": "the redirect, callback and code redemption never pass through the MCP gateway; it checks only, by policy, that an authorization server it names offers S256 PKCE and HTTPS endpoints"
     },
     {
       "id": "SAF-T1506",
@@ -1420,10 +1454,15 @@
     },
     {
       "id": "SAF-T1606",
-      "status": "not-covered",
-      "threats": [],
-      "evidence": [],
-      "reason": "directory listings through a file tool are not judged"
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "mcp-scope",
+        "stdio-proxy"
+      ],
+      "limit": "directory listings outside the declared scope; a listing inside the scope is not judged"
     },
     {
       "id": "SAF-T1701",
@@ -1467,17 +1506,30 @@
     },
     {
       "id": "SAF-T1706",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "bearer-token replay at a resource is not observed"
+      "evidence": [
+        "oauth-token",
+        "http-gateway"
+      ],
+      "limit": "a token presented through the gateway to a route it was not issued for is reported, or refused under audience block, and one bearer value reaching a second remote origin is reported or refused (tokenReuse); replay directly to the resource is not seen"
     },
     {
       "id": "SAF-T1112",
-      "status": "not-covered",
-      "threats": [],
-      "evidence": [],
-      "reason": "server-to-client sampling requests are not scanned"
+      "status": "partial",
+      "threats": [
+        3,
+        40,
+        60,
+        50,
+        91
+      ],
+      "evidence": [
+        "sampling-scan",
+        "stdio-proxy",
+        "http-gateway"
+      ],
+      "limit": "the request's content and includeContext are judged and refusable by signed policy at the MCP guard and gateway; no per-request user approval and no sampling rate or token budget"
     },
     {
       "id": "SAF-T1705",
@@ -1499,30 +1551,43 @@
         59
       ],
       "evidence": [
-        "session-risk"
+        "session-risk",
+        "mcp-session-reads",
+        "mcp-harvest"
       ],
-      "limit": "a mass read of distinct local files followed by an upload of 4 KB or more to a new destination; MCP resource reads are not counted"
+      "limit": "a mass read of distinct local files followed by an upload of 4 KB or more to a new destination; MCP resource reads and read calls count toward the mass read and toward per-server budgets; the task's needs are not judged"
     },
     {
       "id": "SAF-T1803",
-      "status": "not-covered",
-      "threats": [],
-      "evidence": [],
-      "reason": "a database export is not recognised"
+      "status": "partial",
+      "threats": [
+        59
+      ],
+      "evidence": [
+        "mcp-harvest-dump",
+        "mcp-harvest",
+        "stdio-proxy"
+      ],
+      "limit": "bulk-export forms in a read call's arguments, and result volume from one server; a dump assembled from ordinary queries under the budgets, or run by the database server itself, is not recognised"
     },
     {
       "id": "SAF-T1707",
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "MoorAI is not in the OAuth authorization flow"
+      "reason": "state and the callback are handled in the browser and the client, not on the MCP gateway's path"
     },
     {
       "id": "SAF-T1804",
-      "status": "not-covered",
-      "threats": [],
-      "evidence": [],
-      "reason": "MCP resource reads and query results are not counted against the task"
+      "status": "partial",
+      "threats": [
+        59
+      ],
+      "evidence": [
+        "mcp-harvest",
+        "stdio-proxy"
+      ],
+      "limit": "distinct MCP read calls and resource reads, and their result bytes, per server per session against budgets the policy sets (default 100 reads or 5 MiB in 30 minutes, report); what the task justifies is not judged; not in the HTTP MCP gateway"
     },
     {
       "id": "SAF-T1910",
@@ -1547,7 +1612,8 @@
         39,
         65,
         1,
-        15
+        15,
+        90
       ],
       "evidence": [
         "arg-scan",
@@ -1767,14 +1833,6 @@
       "reason": "the file-argument check judges a path that lands on a credential file (credited under SAF-T1502); it does not compare the path with the server's configured scope"
     },
     {
-      "id": "SAF-T1105",
-      "credit": {
-        "threat": 64,
-        "component": "envelope"
-      },
-      "reason": "the entitlement envelope's paths apply to the hook's Read, Bash and Write branches; an MCP call is checked by server name only"
-    },
-    {
       "id": "SAF-T1203",
       "credit": {
         "component": "reputation-cli"
@@ -1832,23 +1890,7 @@
       "credit": {
         "component": "result-scan"
       },
-      "reason": "server-to-client requests (sampling/createMessage) are excluded from the result scan by design (resultOfResponse in mcp-proxy/tool-scan.mjs)"
-    },
-    {
-      "id": "SAF-T1803",
-      "credit": {
-        "threat": 59,
-        "component": "session-risk"
-      },
-      "reason": "the archive-then-outbound sequence needs an outbound step; a dump kept local, or read through a database tool, raises nothing"
-    },
-    {
-      "id": "SAF-T1804",
-      "credit": {
-        "threat": 59,
-        "component": "session-risk"
-      },
-      "reason": "mass reads count distinct local files, not MCP resource reads or query results"
+      "reason": "server-to-client requests (sampling/createMessage) are excluded from the result scan by design (resultOfResponse in mcp-proxy/tool-scan.mjs); the sampling scan (mcp-proxy/sampling-scan.mjs) judges them instead"
     },
     {
       "id": "SAF-T1904",

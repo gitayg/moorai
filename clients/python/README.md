@@ -6,6 +6,7 @@ file, standard library only (`urllib`); tested on Python 3.14.
 ```sh
 moorai-serve                         # 127.0.0.1:8790, server-mode semantics, no token
 MOORAI_SERVE_TOKEN=... moorai-serve  # require "Authorization: Bearer ..."
+MOORAI_SERVE_TASK_TOKEN=... moorai-serve  # only this token may set intent tasks (task())
 ```
 
 ```python
@@ -46,6 +47,20 @@ so run the sidecar where the agent's files are: the same container or pod.
 OpenAI `call_…`). When the sidecar runs with `--model-proxy-url` next to `moorai-model-proxy
 --unchecked-window-ms`, the proxy then knows this call was checked. Any call the model returned that no
 check matched raises a content-free "unchecked tool call" alert. Without those flags the id is ignored.
+
+**Intent alignment.** Send each turn the user wrote with `moorai.task(session_id, text)` (never a tool
+result) and pass `session=session_id` to `tool_call`. A risky call aimed at a host, path or service the
+task never named then gets `intent: {"class", "mode"}` and, under `policy.intentAlignment` `"ask"` or
+`"block"`, an ask or deny. The sidecar keeps only keyed hashes, never the text; `task()` returns
+`{"mode", "captured", "features"}`. It is lexical, and a request pasted from an untrusted source puts its
+hosts in scope. In `"block"` mode a risky call with no task is denied.
+
+The task decides what a risky call may reach, so the agent's own tools must not be able to set it. Run the
+sidecar with `--task-token-file` (or `MOORAI_SERVE_TASK_TOKEN`) and give that token only to the code that
+relays the user's turns: `MoorAIClient(token=..., task_token=...)` (or `MOORAI_SERVE_TASK_TOKEN`); `task()`
+sends `task_token`, everything else sends `token`. The process that runs the tools gets no task token, and
+its `task()` is refused (403). With no token at all, `"ask"` and `"block"` refuse `task()`; `"report"` accepts
+it from any local process.
 
 ## LangGraph
 

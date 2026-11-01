@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.585Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "host",
+      "id": "codex",
+      "label": "OpenAI Codex CLI",
+      "version": null,
+      "tested": "0.154.0",
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "not-installed"
+    }
+  ],
+  "reasons": {
+    "not-installed": "not installed on the machine that ran the tier"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "0ce219492ed4c89a9ce6c72cbceeb7551eb9bb1355e8c809387e2a4b33e17ed7",
+    "sig": "hGD/LWTthc2mwIOzO64Pf2pCp3Wzf7a/AVFXMpRLJa3qGmLV1ldQpJmJTqrwcJX4QYokKQWR9chMpMykWZ5VCg==",
+    "ephemeral": false
+  }
+}

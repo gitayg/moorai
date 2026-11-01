@@ -67,3 +67,12 @@ export function readSessionRows(sessionKey) {
     return out;
   } catch { return []; }
 }
+
+// Every row, oldest first, for a reader that rolls up across sessions (moorai-profile learn). Same bound.
+export function readLedgerRows() {
+  try {
+    const out = [];
+    for (const l of readFileSync(ledgerPath(), "utf8").trim().split("\n").slice(-READ_ROWS)) { try { const r = JSON.parse(l); if (r) out.push(r); } catch { /* skip a torn line */ } }
+    return out;
+  } catch { return []; }
+}

@@ -2,7 +2,7 @@
 // previous instructions" and "reveal the system prompt" — expressed across ~29 languages, so the
 // on-device review inspects non-English prompts too (parity with inline gateways that scan in many
 // languages). English is covered by the base `inj-ignore` detector; this adds the rest, Hebrew
-// included (it is NOT covered by inj-ignore, whose four patterns are English-only; see HEBREW below).
+// included (it is NOT covered by inj-ignore, whose patterns are English-only; see HEBREW below).
 // Patterns match the distinctive verb+object of each phrase, tolerant of inflection.
 //
 // Split in two because the halves have different reach. The instruction-OVERRIDE half is also run on the

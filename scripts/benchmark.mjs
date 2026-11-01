@@ -14,8 +14,9 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { classifyFailures, reportAcceptedFailures } from "./accepted-failures.mjs";
 import { OWASP_AGENTIC, OWASP_MCP, owaspAgenticIds, owaspMcpIds, owaspAgenticPartialNote, owaspMcpPartialNote, frameworkEdition } from "../data/owasp-frameworks.js";
-import { ATTACK_V20, ATTACK_SCOPE, attackCredits } from "../data/attack.js";
+import { ATTACK_V20, ATTACK_SCOPE, attackCredits, attackSummary } from "../data/attack.js";
 import { measureLatency, LATENCY_ROWS } from "./latency-bench.mjs";
+import { loadMechanismEvidence, verifyMechanisms, EVIDENCE_FILE } from "./mechanism-evidence.mjs";
 import { renderLatencyMarkdown } from "./latency.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,35 +43,41 @@ for (const t of threats.threats) {
 }
 
 // --- OWASP Agentic (ASI) and MCP Top 10: same detector count, plus bounded credits ---
-// An item is covered when a rule that credits it in full has >=1 on-device detector, partial when only
-// bounded credits (owaspAgenticPartial / owaspMcpPartial) have one, and uncovered otherwise. A rule whose
-// mechanism lives outside data/detectors.js (the hook's drift, delegation or session checks) is listed
-// under Threats but adds no detector, so it cannot make an item read as covered here.
-function frameworkCoverage(fw, idsOf, noteOf) {
-  const byItem = Object.fromEntries(Object.keys(fw.items).map((k) => [k, { threats: 0, partialThreats: 0, detectors: 0, status: "uncovered" }]));
+// A credit is backed when its rule has >=1 on-device detector, or a mechanism declared in
+// data/mechanism-evidence.json whose source and named tests exist (scripts/mechanism-evidence.mjs). An
+// item is covered when a full credit is backed, partial when only bounded credits (owaspAgenticPartial /
+// owaspMcpPartial) are, and uncovered otherwise. A rule with neither is listed under Threats only.
+const mechanisms = verifyMechanisms(loadMechanismEvidence(ROOT), threats, { owaspAgentic: OWASP_AGENTIC, owaspMcp: OWASP_MCP }, ROOT);
+function frameworkCoverage(fw, key, idsOf, noteOf) {
+  const byItem = Object.fromEntries(Object.keys(fw.items).map((k) => [k, { threats: 0, partialThreats: 0, detectors: 0, mechanisms: 0, status: "uncovered" }]));
   for (const t of threats.threats) {
     const dets = detCountByThreat.get(t.id) || 0;
     for (const id of idsOf(t)) {
       const c = byItem[id];
       if (!c) continue;
       const partial = Boolean(noteOf(t, id));
+      const mechs = mechanisms.backing(t.id, key, id);
       c.threats += 1;
       if (partial) c.partialThreats += 1;
       c.detectors += dets;
-      if (dets > 0) c.status = !partial ? "covered" : c.status === "covered" ? "covered" : "partial";
+      c.mechanisms += mechs;
+      if (dets > 0 || mechs > 0) c.status = !partial ? "covered" : c.status === "covered" ? "covered" : "partial";
     }
   }
   const count = (s) => Object.values(byItem).filter((v) => v.status === s).length;
   return { edition: frameworkEdition(fw), source: fw.source, covered: count("covered"), partial: count("partial"), uncovered: count("uncovered"), total: Object.keys(fw.items).length, byItem };
 }
-const agenticCov = frameworkCoverage(OWASP_AGENTIC, owaspAgenticIds, owaspAgenticPartialNote);
-const mcpCov = frameworkCoverage(OWASP_MCP, owaspMcpIds, owaspMcpPartialNote);
+const agenticCov = frameworkCoverage(OWASP_AGENTIC, "owaspAgentic", owaspAgenticIds, owaspAgenticPartialNote);
+const mcpCov = frameworkCoverage(OWASP_MCP, "owaspMcp", owaspMcpIds, owaspMcpPartialNote);
 
 // --- MITRE ATT&CK v20 over the AI-agent scope (data/attack.js ATTACK_SCOPE) ---
 // Unlike the OWASP lists, an ATT&CK credit states its own level (full / partial / none), reviewed per rule, so
 // a technique's status is the best level any rule credits: covered (full), partial, or uncovered (only `none`
 // credits, or no rule). Detectors are counted for transparency but do not set the status: several credited
 // mechanisms (session risk, the MCP allow-list, file metadata) are not detectors in data/detectors.js.
+// A partial technique is also split by why it is partial (data/attack.js attackSummary): bounded by design,
+// when a partial credit says its uncaught forms are indistinguishable from an agent's legitimate work or
+// outside every agent-side surface (`bound: "design"`), or an open gap otherwise.
 const ATTACK_NAMES = JSON.parse(readFileSync(join(ROOT, "data/attack-v20-techniques.json"), "utf8")).techniques;
 const attackCov = (() => {
   const rank = { full: 2, partial: 1, none: 0 };
@@ -84,13 +91,18 @@ const attackCov = (() => {
       it.best = Math.max(it.best, rank[c.coverage]);
     }
   }
-  for (const it of Object.values(byItem)) { it.status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered"; delete it.best; }
+  const sum = attackSummary(threats.threats);
+  for (const [id, it] of Object.entries(byItem)) {
+    it.status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered"; delete it.best;
+    if (it.status === "partial") it.partialBound = sum.byItem[id].partialBound;
+  }
   const count = (s, lane) => Object.values(byItem).filter((v) => v.status === s && (!lane || v.lane === lane)).length;
   const agentTotal = Object.values(byItem).filter((v) => v.lane === "agent").length;
   return {
     edition: ATTACK_V20.version, source: ATTACK_V20.source, total: Object.keys(byItem).length,
     covered: count("covered"), partial: count("partial"), uncovered: count("uncovered"),
-    agentLane: { total: agentTotal, covered: count("covered", "agent"), partial: count("partial", "agent"), uncovered: count("uncovered", "agent") },
+    partialDesign: sum.scope.partialDesign, partialGap: sum.scope.partialGap,
+    agentLane: { total: agentTotal, covered: count("covered", "agent"), partial: count("partial", "agent"), uncovered: count("uncovered", "agent"), partialDesign: sum.agentLane.partialDesign, partialGap: sum.agentLane.partialGap },
     byItem
   };
 })();
@@ -118,6 +130,7 @@ const report = {
   owaspLlmTop10: { covered, total: 10, byItem: owaspCov },
   owaspAgenticTop10: agenticCov,
   owaspMcpTop10: mcpCov,
+  mechanismEvidence: { declared: mechanisms.proven.length + mechanisms.unproven.length, proven: mechanisms.proven.map((m) => m.id), unproven: mechanisms.unproven },
   mitreAttackV20: attackCov,
   latency: "__LATENCY__"
 };
@@ -133,14 +146,16 @@ const rows = Object.entries(OWASP).map(([k, name]) => {
   return `| ${k} | ${name} | ${c.threats} | ${c.detectors} | ${status} |`;
 }).join("\n");
 const STATUS = { covered: "✅ covered", partial: "◐ partial", uncovered: "—" };
+const ATTACK_STATUS = (c) => (c.status === "partial" ? `◐ partial (${c.partialBound === "design" ? "by design" : "open gap"})` : STATUS[c.status]);
 const fwRows = (fw, cov) => Object.entries(fw.items).map(([k, name]) => {
   const c = cov.byItem[k];
-  return `| ${k} | ${name} | ${c.threats} | ${c.partialThreats} | ${c.detectors} | ${STATUS[c.status]} |`;
+  return `| ${k} | ${name} | ${c.threats} | ${c.partialThreats} | ${c.detectors} | ${c.mechanisms} | ${STATUS[c.status]} |`;
 }).join("\n");
 const fwLine = (cov) => `${cov.covered}/${cov.total} covered, ${cov.partial} partial, ${cov.uncovered} uncovered`;
-const attackLine = (cov) => `${fwLine(cov)} (agent lane: ${fwLine(cov.agentLane)})`;
+const splitLine = (cov) => `${cov.covered}/${cov.total} covered, ${cov.partial} partial (${cov.partialDesign} bounded by design, ${cov.partialGap} open gap), ${cov.uncovered} uncovered`;
+const attackLine = (cov) => `${splitLine(cov)} (agent lane: ${splitLine(cov.agentLane)})`;
 const attackRows = Object.entries(attackCov.byItem).map(([id, c]) =>
-  `| ${id} | ${ATTACK_NAMES[id].name} | ${c.lane} | ${c.threats} | ${c.detectors} | ${STATUS[c.status]} |`).join("\n");
+  `| ${id} | ${ATTACK_NAMES[id].name} | ${c.lane} | ${c.threats} | ${c.detectors} | ${ATTACK_STATUS(c)} |`).join("\n");
 const md = `# MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with \`npm run benchmark\`.
@@ -162,21 +177,25 @@ ${rows}
 
 ## OWASP Top 10 for Agentic Applications (${frameworkEdition(OWASP_AGENTIC)}) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
 ${fwRows(OWASP_AGENTIC, agenticCov)}
 
 ## OWASP MCP Top 10 (${frameworkEdition(OWASP_MCP)}) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
 ${fwRows(OWASP_MCP, mcpCov)}
 
 For the two agentic lists, **Threats** counts the rules that credit the item (\`owaspAgentic\` / \`owaspMcp\`
-in \`data/threats.json\`) and **Partial** how many of those credits are bounded. An item is *covered* when a
-rule crediting it in full has an on-device detector, *partial* when only bounded credits do, and *—*
-otherwise. Rules whose mechanism is not a detector in \`data/detectors.js\` (drift, delegation, session
-risk, the MCP allow-list) are counted under Threats but add no detectors. Sources:
+in \`data/threats.json\`) and **Partial** how many of those credits are bounded. A credit is backed when its
+rule has an on-device detector in \`data/detectors.js\`, or an enforcing mechanism declared in
+\`${EVIDENCE_FILE}\` (the MCP server allow-list, the entitlement envelope, the delegation, oversight,
+circuit-breaker and trifecta checks, the MCP sampling and over-sharing checks, cascade limits, and the MCP
+package policy and known-compromised package list) whose source holds the named symbol and whose named tests exist in the
+unit suite with those exact titles; **Mechanisms** counts those. A declaration backs only a credit the rule
+already carries, at its level. An item is *covered* when a full credit is backed, *partial* when only bounded
+credits are, and *—* otherwise. ${mechanisms.proven.length} of ${mechanisms.proven.length + mechanisms.unproven.length} declared mechanisms are proven${mechanisms.unproven.length ? " (unproven: " + mechanisms.unproven.map((m) => m.id).join(", ") + ")" : ""}. Sources:
 [${OWASP_AGENTIC.name}](${OWASP_AGENTIC.source}), [${OWASP_MCP.name}](${OWASP_MCP.source}).
 
 ## MITRE ATT&CK v${ATTACK_V20.version} coverage (AI-agent scope)
@@ -190,7 +209,10 @@ aimed at (\`ATTACK_SCOPE\` in \`data/attack.js\`). **Lane** says who can see the
 an AI agent takes that a MoorAI hook, proxy or gateway sees; \`edr\`, \`identity\`, \`email\` and \`pre\` (the
 adversary's own infrastructure) are outside every MoorAI surface. Each credit in \`data/threats.json\` (\`attack\`)
 states its level and a one-line reason; a technique is *covered* when a rule credits it in full, *partial* when
-the best credit is bounded, and *—* otherwise. Coverage is a mechanism claim, not a detection rate. Technique ids
+the best credit is bounded, and *—* otherwise. A partial technique is *by design* when one of its partial credits
+carries \`bound: "design"\`: the forms it does not catch are indistinguishable from an agent's legitimate work, or
+outside anything an agent-side hook, proxy or gateway observes, and \`boundReason\` says which. Every other partial
+technique is an *open gap*: detection MoorAI has not built yet. Coverage is a mechanism claim, not a detection rate. Technique ids
 and names: [${ATTACK_V20.name} v${ATTACK_V20.version}](${ATTACK_V20.stix}), released ${ATTACK_V20.released}.
 
 Coverage is measured, not asserted: every number above is produced by running the shipped detection
@@ -214,9 +236,10 @@ for (const [label, fw, cov] of [["OWASP Agentic Top 10", OWASP_AGENTIC, agenticC
   for (const [k, name] of Object.entries(fw.items)) {
     const c = cov.byItem[k];
     const mark = c.status === "covered" ? g("✓") : c.status === "partial" ? "\x1b[33m◐\x1b[0m" : r("·");
-    console.log(`   ${mark} ${k} ${name} ${`\x1b[2m(${c.threats} threats, ${c.partialThreats} partial, ${c.detectors} detectors)\x1b[0m`}`);
+    console.log(`   ${mark} ${k} ${name} ${`\x1b[2m(${c.threats} threats, ${c.partialThreats} partial, ${c.detectors} detectors, ${c.mechanisms} mechanisms)\x1b[0m`}`);
   }
 }
+for (const m of mechanisms.unproven) console.log(r(`  mechanism ${m.id} (#${m.threatId}) not counted: ${m.missing.join("; ")}`));
 console.log(`  MITRE ATT&CK v${ATTACK_V20.version} (AI-agent scope): ${attackLine(attackCov)}`);
 for (const [id, c] of Object.entries(attackCov.byItem)) {
   const mark = c.status === "covered" ? g("✓") : c.status === "partial" ? "\x1b[33m◐\x1b[0m" : r("·");

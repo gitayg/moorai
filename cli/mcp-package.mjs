@@ -14,7 +14,7 @@
 // {package: "name@version", ecosystem}. Failures FAIL CLOSED: a package that could not be fetched,
 // verified or fully extracted is at least REVIEW, never silently CLEAN.
 
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, readdirSync, lstatSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, readdirSync, lstatSync, createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename, dirname } from "node:path";
 import { createHash } from "node:crypto";
@@ -29,7 +29,7 @@ import { downloadToFile } from "./mcp-package/download.mjs";
 import { resolveNpm, resolvePypi, matchesIntegrity, MAX_ARTIFACT_BYTES, MAX_REPO_BYTES } from "./mcp-package/registry.mjs";
 import { resolveGithub } from "./mcp-package/github.mjs";
 import { isOffline, OFFLINE_REASON } from "./mcp-package/endpoints.mjs";
-import { packageHeuristics, nameFindings, HEURISTICS } from "./mcp-package/heuristics.mjs";
+import { packageHeuristics, nameFindings, artifactFindings, HEURISTICS } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 
 export { resolveMcpPackages, parsePackageArg, resolveLaunch, HEURISTICS };
@@ -42,7 +42,7 @@ const ANALYSIS_REV = (() => {
   const here = dirname(fileURLToPath(import.meta.url));
   const h = createHash("sha256");
   for (const f of ["mcp-package.mjs", "mcp-package/heuristics.mjs", "mcp-package/scope.mjs", "scan-core.mjs", "hook-core.mjs",
-    "../data/detectors.js", "../data/threats.json", "../data/secrets-patterns.js", "../data/content-rules.js", "../data/popular-packages.js", "../src/engine.js"]) {
+    "../data/detectors.js", "../data/threats.json", "../data/secrets-patterns.js", "../data/content-rules.js", "../data/popular-packages.js", "../data/known-bad-artifacts.js", "../data/throwaway-hosts.js", "../src/engine.js"]) {
     try { h.update(readFileSync(join(here, f))); } catch { h.update(f); }
   }
   return h.digest("hex");
@@ -105,6 +105,12 @@ export function unanalysedEntry(ref, reason) {
   return e;
 }
 
+async function sha256File(path) {
+  const h = createHash("sha256");
+  for await (const chunk of createReadStream(path)) h.update(chunk);
+  return h.digest("hex");
+}
+
 function extractionRoot(dir) {
   const entries = readdirSync(dir);
   if (entries.length === 1) {
@@ -158,7 +164,7 @@ async function extractInto(ref, path, dir, limits) {
   return extractArchiveFile(path, dir, { limits });
 }
 
-export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheDir = null, policy = {}, engine = null, now = Date.now(), workDir = tmpdir(), limits = LIMITS, downloadCap = null } = {}) {
+export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheDir = null, policy = {}, engine = null, now = Date.now(), workDir = tmpdir(), limits = LIMITS, downloadCap = null, knownBadSha256 } = {}) {
   if (!ANALYSABLE.has(ref.ecosystem)) return unanalysedEntry(ref, unanalysableReason(ref));
   const github = ref.ecosystem === "github";
   const repoRoot = github && !ref.path;      // `github:owner/repo[@ref]` — the whole repository
@@ -214,6 +220,9 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     if (github) entry.notes.push({ id: "integrity-none-git-archive" });
     else if (!matchesIntegrity(dl.digest, meta.integrity)) return fail("integrity-mismatch");
     else entry.integrity.verified = true;
+    // PyPI's verified digest already is the SHA-256; npm (sha512) and git archives are hashed once more.
+    const artifactSha = meta.integrity.algorithm === "sha256" && dl.digest ? dl.digest : await sha256File(artifact);
+    const artFs = artifactFindings(artifactSha, knownBadSha256);
 
     let ex;
     try { ex = await extractInto(ref, artifact, dir, limits); } catch { return fail("extract-failed"); }
@@ -224,8 +233,8 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     const skill = github && files.some((f) => /(^|[/\\])SKILL\.md$/i.test(f));
     const eng = engine || buildEngine(policy);
     const scoped = files.length ? scanPackageFiles(root, files, { engine: eng, policy, skill, repoRoot }) : { findings: [], filesScanned: 0, filesSkipped: 0, surfaces: 0 };
-    const heurFs = packageHeuristics(root, files, { repoRoot });
-    const all = [...scoped.findings, ...heurFs, ...nameFs];
+    const heurFs = packageHeuristics(root, files, { repoRoot, knownBadSha256 });
+    const all = [...scoped.findings, ...heurFs, ...artFs, ...nameFs];
 
     let verdict = verdictOf(all);
     if (ex.rejected) { entry.notes.push({ id: "unsafe-archive-entries", count: ex.rejected }); verdict = worseVerdict(verdict, "REVIEW"); }

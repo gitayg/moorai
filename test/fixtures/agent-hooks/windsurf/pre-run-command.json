@@ -1,0 +1,11 @@
+{
+  "agent_action_name": "pre_run_command",
+  "trajectory_id": "traj-0001",
+  "execution_id": "exec-0001",
+  "timestamp": "2026-10-21T10:00:00.000Z",
+  "model_name": "Unknown",
+  "tool_info": {
+    "command_line": "npm install",
+    "cwd": "/Users/me/project"
+  }
+}

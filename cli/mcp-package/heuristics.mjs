@@ -7,9 +7,12 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { relative, basename, join } from "node:path";
-import { safeRelPath } from "./archive.mjs";
+import { createHash } from "node:crypto";
+import { safeRelPath, LIMITS } from "./archive.mjs";
 import { contentHash } from "../content-hash.mjs";
 import { classifyPackage } from "../../data/popular-packages.js";
+import { KNOWN_BAD_SHA256, isKnownBadSha256 } from "../../data/known-bad-artifacts.js";
+import { throwawayHost } from "../../data/throwaway-hosts.js";
 import { notRuntimeReason } from "./paths.mjs";
 
 export const HEURISTICS = {
@@ -29,6 +32,7 @@ export const HEURISTICS = {
   "pkg-decode-exec": { category: "obfuscation", tier: "justify", intent: "obfuscated-payload" },
   "pkg-remote-code": { category: "remote-code", tier: "block", intent: "obfuscated-payload" },
   "pkg-remote-code-browser": { category: "remote-code", tier: "notify", intent: "obfuscated-payload" },
+  "pkg-throwaway-host": { category: "remote-code", tier: "notify", intent: "external-network-egress" },
   "pkg-typosquat": { category: "typosquat", tier: "justify", intent: "typosquat-install" },
   "pkg-known-malicious": { category: "typosquat", tier: "block", intent: "typosquat-install" },
   "pkg-ecosystem-confusion": { category: "typosquat", tier: "notify", intent: "typosquat-install" }
@@ -67,7 +71,8 @@ const RE = {
   pyShell: /\bpty\.spawn\s*\(|["'`]\/bin\/(?:ba|z)?sh["'`]/,
   sockConnect: /\.connect\s*\(|\bnet\.(?:connect|createConnection)\s*\(|\bnew\s+net\.Socket\s*\(/,
   jsShellPipe: /\bspawn\s*\(\s*["'`](?:\/bin\/)?(?:ba|z)?sh["'`]|\bspawn\s*\(\s*["'`]cmd(?:\.exe)?["'`]/,
-  cmdclass: /\bcmdclass\s*=/
+  cmdclass: /\bcmdclass\s*=/,
+  urlLit: /\bhttps?:\/\/[^\s"'`<>\\]{1,2048}/
 };
 
 const BROWSER_ASSET = /(^|\/)(assets|static|public|www)\/|\.worker[-.][^/]*\.m?js$/i;
@@ -93,6 +98,18 @@ function pipeToShellExec(code, name) {
     const end = code.indexOf("\n", m.index);
     const line = code.slice(start, end < 0 ? code.length : end);
     if (shell ? !RE.shellQuietLine.test(line) : RE.execCall.test(line)) return m[0];
+  }
+  return null;
+}
+
+// The first http(s) URL literal whose PARSED hostname is a free throwaway host (data/throwaway-hosts.js).
+function throwawayUrl(text) {
+  const re = new RegExp(RE.urlLit.source, "gi");
+  let m;
+  while ((m = re.exec(text))) {
+    let host;
+    try { host = new URL(m[0]).hostname; } catch { continue; }
+    if (throwawayHost(host)) return m[0];
   }
   return null;
 }
@@ -197,16 +214,35 @@ function codeFindings(text, rel, name) {
       const install = hit(RE.installCmdCall, live) || hit(RE.globalInstallArgv, live) || (hit(RE.pmLiteral, live) && hit(RE.installVerb, live));
       out.push(install ? finding("pkg-runtime-install", rel, install) : finding("pkg-spawn-egress", rel, spawn));
     }
+    const throwaway = throwawayUrl(live);
+    if (throwaway) out.push(finding("pkg-throwaway-host", rel, throwaway));
   }
   return out;
 }
 
+// A file whose SHA-256 is a published known-bad digest (data/known-bad-artifacts.js), any file type.
+function knownBadFile(full, set) {
+  if (!set || !set.size) return null;
+  try {
+    if (statSync(full).size > LIMITS.maxFileBytes) return null;
+    const hex = createHash("sha256").update(readFileSync(full)).digest("hex");
+    return isKnownBadSha256(hex, set) ? hex : null;
+  } catch { return null; }
+}
+
+// The downloaded registry artifact's SHA-256 against the same list.
+export function artifactFindings(sha256hex, set = KNOWN_BAD_SHA256) {
+  return isKnownBadSha256(sha256hex, set) ? [finding("pkg-known-malicious", null, sha256hex)] : [];
+}
+
 // files: absolute paths under root (already symlink-free, from scan-core's walk).
-export function packageHeuristics(root, files, { repoRoot = false } = {}) {
+export function packageHeuristics(root, files, { repoRoot = false, knownBadSha256 = KNOWN_BAD_SHA256 } = {}) {
   const out = [];
   for (const full of files) {
     const rel = relative(root, full).split("\\").join("/");
     const name = basename(full);
+    const bad = knownBadFile(full, knownBadSha256);
+    if (bad) out.push(finding("pkg-known-malicious", rel, bad));
     if (rel === "package.json") {
       const t = readText(full);
       if (t) out.push(...packageJsonFindings(t, rel, root));

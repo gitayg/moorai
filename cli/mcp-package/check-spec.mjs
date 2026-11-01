@@ -23,7 +23,7 @@ export function parseCheckSpec(arg) {
   return { kind: ref.ecosystem, ref: { ecosystem: ref.ecosystem, name: ref.name, version: ref.version || null }, raw };
 }
 
-const EXACT_SEMVER = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const EXACT_SEMVER = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 // → "exact" | "tag-or-range" | "none". PyPI's parser only yields a version for `==` / `@`, i.e. exact.
 export function pinKind(spec) {

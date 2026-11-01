@@ -18,6 +18,12 @@
 //     pipelines (@moorai/agent-sdk scanBeforeEmbed / guardEmbed, POST /v1/index-scan, MCP vector-store
 //     writes through cli/index-scan.mjs). Silent when ctx.targetPath names a skill-surface file: that is
 //     the hook reading CLAUDE.md / AGENTS.md at session start, which is memory (#22), not a knowledge base.
+//   kb-fact-conflict (#21) — stage "prompt" (and so "file" and "index", which run the prompt detectors), and
+//     "output": the model proxy's request scan, moorai-serve / the SDK's scan, and a retrieved tool result
+//     (inbound). Fires when two chunks of the same text state different values for one entity and attribute
+//     (data/kb-facts.js) — a planted fact retrieved beside the real one. Listed BEFORE rag-poisoning: the
+//     engine keeps the last "warn" finding per threat, so when both fire the instruction-carrying finding is
+//     the one #21 reports.
 //
 // Both use a whole-text prefilter (/^[\s\S]/) and decide in refine, the division ingest-agent-directed
 // uses. Neither is "inj"-prefixed, on purpose: the decoded-variant pass would otherwise re-run the whole
@@ -27,6 +33,7 @@ import { safeRegex } from "../src/safe-regex.js";
 import { globalMatches } from "../src/regex-restart.js";
 import { isSkillSurface } from "./skill-surface.js";
 import { memoryKind, memoryPoisoningTell, retrievalTell, stripMetaExamples } from "./poisoning-tells.js";
+import { factConflicts } from "./kb-facts.js";
 
 // The ingested-content injection family: every detector that already says "this content carries an
 // instruction aimed at the agent". Chosen by id, not by threat, so a new #40 detector does not join
@@ -88,6 +95,19 @@ export function poisoningDetectors(all) {
         const t = stripMetaExamples(text);
         return Boolean(familyHit(MEMORY_FAMILY, t, ctx) || memoryPoisoningTell(t).fire);
       }
+    },
+    {
+      // #21 (LLM08, ATLAS AML.T0020) — conflicting facts in retrieved context: one product with two prices,
+      // one payee with two account numbers, stated by two different chunks of the same request. The forged
+      // fact addresses no one, so no phrasing tell sees it (AIGoat ctf3); its disagreement with the genuine
+      // entry beside it is what shows. Content-free: factConflicts returns attribute kinds, never values.
+      detectorId: "kb-fact-conflict",
+      threatId: 21,
+      stages: ["prompt", "output"],
+      mode: "warn",
+      hint: "Conflicting facts in retrieved context: two passages state different values for the same entity and attribute (e.g. two prices for one product), a sign one of them was planted (knowledge-base poisoning).",
+      patterns: [/^[\s\S]/],
+      refine: (_m, text) => factConflicts(text).length > 0
     },
     {
       // #21 (LLM08, ATLAS AML.T0020) — content headed into a knowledge base / vector index carries an

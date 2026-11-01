@@ -43,6 +43,24 @@ pub fn hash_with_key(key: Option<&[u8; 32]>, s: &str) -> String {
     }
 }
 
+// A #90 cardholder-data hash (cli/span-hash.mjs processHash): "proc:" and the first 16 hex of HMAC-SHA-256 under a
+// key random to this process. A card number is drawn from a space small enough that the install-token-keyed hash
+// could be enumerated back to it by anyone holding the token; this one links nothing outside the process.
+pub const PROC_PREFIX: &str = "proc:";
+
+pub fn process_hash(s: &str) -> String {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    let key = KEY.get_or_init(|| {
+        use ring::rand::SecureRandom;
+        let mut k = [0u8; 32];
+        ring::rand::SystemRandom::new().fill(&mut k).expect("system random");
+        k
+    });
+    let mac = hmac_sha256(key, s.as_bytes());
+    let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{PROC_PREFIX}{}", &hex[..HEX_LEN])
+}
+
 // The enrolled key, read the way `identity()` reads the token: the administrator's install token when one
 // was provisioned (admin_config::effective_config), else config.json (legacy dir fallback).
 pub fn tenant_key() -> Option<[u8; 32]> {

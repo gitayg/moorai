@@ -1,0 +1,47 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.493Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "sdk",
+      "id": "sdk-anthropic-node",
+      "label": "Anthropic SDK for Node",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "sdk-not-installed"
+    }
+  ],
+  "reasons": {
+    "sdk-not-installed": "the official SDK package is not installed; the tier installs nothing"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "753e9d0bd2d383a61e56b52c5c89d18d17d0205c40c11a056baa7f5234421455",
+    "sig": "ZA8J6jZjv/bv5w/fwRO7KfEkOvxocSEx0uYRtMUV59HDK52/lPTwGB0WZ2GksAnOgbK0cMe4eL32krWVAs0VBw==",
+    "ephemeral": false
+  }
+}

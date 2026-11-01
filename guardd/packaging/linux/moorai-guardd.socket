@@ -1,0 +1,18 @@
+# moorai-guardd hook endpoint (docs/proposals/guardd-contract.md §3.1). systemd creates /run/moorai
+# root:root 0755 and the socket root:root 0666; the helper inherits it through LISTEN_FDS. A user cannot
+# create an entry in a root-owned 0755 directory, so nothing else can sit at this path.
+[Unit]
+Description=MoorAI privileged helper endpoint (moorai-guardd)
+Documentation=https://github.com/gitayg/moorai/blob/main/docs/proposals/guardd-contract.md
+
+[Socket]
+ListenStream=/run/moorai/hook.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0666
+DirectoryMode=0755
+Accept=no
+RemoveOnStop=no
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,15 @@
+{
+  "clineVersion": "4.1.25",
+  "hookName": "PreToolUse",
+  "timestamp": "1761040800000",
+  "taskId": "task-0001",
+  "workspaceRoots": ["/Users/me/project"],
+  "userId": "user-0001",
+  "preToolUse": {
+    "toolName": "write_to_file",
+    "parameters": {
+      "path": "src/index.js",
+      "content": "console.log('hello')\n"
+    }
+  }
+}

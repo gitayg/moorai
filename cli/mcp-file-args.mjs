@@ -11,7 +11,8 @@
 // A separate file, not hook-core.mjs: hook-core's decision section is pure (text in, verdict out) and
 // this one does filesystem I/O on paths an agent chose. It composes hook-core's checks and adds none:
 // every resolved file gets exactly what the Bash branch gives a resolved read path — the content scan
-// (fileScanText + decideText at "file"), the #72 metadata scan and the #55 credential-location check.
+// (fileScanText + decideText at "file"), the #72 metadata scan, the #55 credential-location check and
+// the labelPolicy sensitivity-label check.
 //
 // Bounded and fail-open, like extractReadPaths: a capped walk of the argument tree, a capped number of
 // stat calls and files, 256 KB read per file (the Bash branch's readFileCapped cap) and 1 MB per call,
@@ -24,6 +25,7 @@ import { resolve, join, basename, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate } from "./hook-core.mjs";
+import { decideSensitivityLabel } from "./sensitivity-labels.mjs";
 
 export const MCP_FILE_CAPS = Object.freeze({
   depth: 8,              // nesting levels walked below the arguments object
@@ -36,7 +38,7 @@ export const MCP_FILE_CAPS = Object.freeze({
 });
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
-const EMPTY = () => ({ decision: "allow", reasons: [], alternatives: [], findings: [], kill: false, killIds: [], files: [], text: "", sends: false });
+const EMPTY = () => ({ decision: "allow", reasons: [], alternatives: [], findings: [], kill: false, killIds: [], files: [], text: "", sends: false, unevaluated: false });
 
 // Mirrors the Bash branch's `uploading` flag. There, a file an UPLOAD command reads carries ctx.egress;
 // a file `cat` reads does not. An MCP call has no command grammar, so the tool's own name is the only
@@ -163,6 +165,7 @@ export function resolveMcpFileArgs(args, { bases = [], home = os.homedir(), plat
 // findings / kill / killIds) plus `files` — one entry per scanned file with its own findings, so the
 // caller can report each with its path under the capture tier — `text`, the scanned content, and
 // `sends`, whether the tool's name says it ships the file (the ctx.egress decision above).
+// `unevaluated`: a file's sensitivity label could not be established under an active labelPolicy.
 // `argIds`: threat ids the ARGUMENT scan already raised; a #55 on the path is then the same fact twice
 // (the path text is in the arguments) and is not repeated. No `mask` is ever passed: a file referenced
 // by path cannot be rewritten, so a "mask" policy resolves to its fallback (threatActionFor).
@@ -190,6 +193,13 @@ export function scanMcpFileArgs(engine, policy, { tool, args, bases = [], home, 
       };
       merge(decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(f.real), egress } }));
       merge(decideFileMetadata(engine, policy, f.real, () => head));
+      // labelPolicy (cli/sensitivity-labels.mjs): a Purview label on the file, for a "send" when the tool's
+      // name says it ships the file, else a "read". It reads the file's own metadata (the ZIP directory at
+      // the end, a PDF's head and tail), not `head`. A label it could not establish sets `unevaluated`,
+      // which the caller settles by its surface's fail mode.
+      const ld = decideSensitivityLabel(engine, policy, f.real, egress ? "send" : "read");
+      merge(ld);
+      if (ld.unevaluated) out.unevaluated = true;
       if (!argIds.includes(55)) {
         for (const p of [...new Set([f.path, f.real])]) {
           const pd = decideCredFileRead(engine, policy, p);

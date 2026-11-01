@@ -106,6 +106,32 @@ export const LOCAL_AI_INSTALLS = [
   { runtime: "winml-server", bins: ["WinMLServer"], only: "win32" }
 ];
 
+// Model stores, for the opt-in static model scan (cli/model-scan-posture.mjs). Defaults from each
+// project's docs: Ollama "~/.ollama/models" (macOS, Windows %USERPROFILE%\.ollama\models), the Linux
+// service install "/usr/share/ollama/.ollama/models", overridden by OLLAMA_MODELS (docs.ollama.com/faq,
+// "Where are models stored?"); LM Studio "~/.lmstudio/models" and the older "~/.cache/lm-studio/models"
+// (lmstudio.ai/docs/app/basics/download-model); the Hugging Face hub cache HF_HUB_CACHE, else
+// HF_HOME/hub, else "~/.cache/huggingface/hub" (huggingface.co/docs/huggingface_hub/guides/manage-cache).
+// → [{ runtime, dir }] for the dirs that exist. The dir never leaves the device: the scan reports counts.
+export function modelStoreDirs({ home = homedir(), env = process.env, platform = process.platform, exists = existsSync } = {}) {
+  const cands = [];
+  if (env.OLLAMA_MODELS) cands.push(["ollama", env.OLLAMA_MODELS]);
+  cands.push(["ollama", join(home, ".ollama", "models")]);
+  if (platform === "linux") cands.push(["ollama", "/usr/share/ollama/.ollama/models"]);
+  cands.push(["lmstudio", join(home, ".lmstudio", "models")], ["lmstudio", join(home, ".cache", "lm-studio", "models")]);
+  const hf = env.HF_HUB_CACHE || (env.HF_HOME ? join(env.HF_HOME, "hub") : join(home, ".cache", "huggingface", "hub"));
+  cands.push(["huggingface", hf]);
+  const out = [], seen = new Set();
+  for (const [runtime, dir] of cands) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    let ok = false;
+    try { ok = exists(dir); } catch { ok = false; }
+    if (ok) out.push({ runtime, dir });
+  }
+  return out;
+}
+
 const VERSION_RE = /^[0-9][0-9A-Za-z.+-]{0,31}$/;
 // CFBundleShortVersionString from an XML Info.plist; a binary plist (or anything else) → null.
 export function plistVersion(txt) {

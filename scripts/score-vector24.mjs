@@ -93,7 +93,7 @@ export const VECTOR_FILES = {
 // Kept as source strings and compiled here so the check is the same regex the agent host would apply.
 // Re-derive with: grep -n "const PRETOOL_MATCHERS" cli/moorai-hook.mjs
 // test/vector24-corpus.test.mjs asserts this list still equals that constant, so it cannot drift silently.
-export const INSTALLED_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+export const INSTALLED_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool"];
 export function hookRegistered(toolName) {
   return INSTALLED_MATCHERS.some((m) => { try { return new RegExp(m).test(String(toolName || "")); } catch { return false; } });
 }
@@ -335,6 +335,9 @@ export async function scoreVector2({ semantic = false, corpusPath = VECTOR_FILES
   const data = JSON.parse(readFileSync(join(ROOT, corpusPath), "utf8"));
   const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
+  // Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+  // answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+  if (semantic && !process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
   const escalate = semantic
     ? (eng, text, stage, turns) => escalateMiss(eng, text, stage, SEMANTIC_POLICY, turns ? { turns } : undefined)
     : null;

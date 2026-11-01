@@ -127,21 +127,66 @@ pub fn enrolled_console(dir: &str) -> Option<String> {
     (v.get("source").and_then(|s| s.as_str()) == Some("enrolment")).then_some(origin)
 }
 
-pub type Fetch<'a> = &'a dyn Fn(&str, &str) -> Result<Value, String>;
+// (url, install token, extra headers)
+pub type Fetch<'a> = &'a dyn Fn(&str, &str, &[(&'static str, String)]) -> Result<Value, String>;
+
+// Who a policy is resolved for (the console's resolvePolicy). Request headers, never the URL: a query string
+// is kept by proxies and access logs.
+pub fn identity_headers(user: &str, device: &str) -> Vec<(&'static str, String)> {
+    vec![("X-MoorAI-User", header_value(user)), ("X-MoorAI-Device", header_value(device))]
+}
+
+// A login name or hostname as a header value: percent-encoded (RFC 3986 unreserved characters kept), since
+// either can be non-ASCII and a header value cannot. The console decodes it (decodeURIComponent).
+pub fn header_value(v: &str) -> String {
+    v.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
 
 // Tests that point HOME at a scratch directory hold this, so they never see each other's HOME.
 #[cfg(test)]
 pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// Tests: a loopback console that answers `body` and records each request's head (request line + headers,
+// header names lower-cased) → (origin, heads).
+#[cfg(test)]
+pub(crate) fn record_heads(body: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    let heads = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let h2 = heads.clone();
+    std::thread::spawn(move || {
+        for stream in l.incoming().flatten() {
+            let mut r = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut line = String::new();
+            let mut first = true;
+            while r.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                let t = line.trim_end().to_string();
+                if t.is_empty() { break; }
+                head.push_str(&if first { t } else { match t.split_once(':') { Some((k, v)) => format!("{}:{}", k.to_ascii_lowercase(), v), None => t } });
+                head.push('\n');
+                first = false;
+                line.clear();
+            }
+            h2.lock().unwrap().push(head);
+            let _ = (&stream).write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        }
+    });
+    (origin, heads)
+}
+
 // The one credentialed GET: 4 s, redirects off (a 3xx is a failure, so the token cannot be bounced on),
 // non-2xx is a failure.
-pub fn real_fetch(url: &str, token: &str) -> Result<Value, String> {
+pub fn real_fetch(url: &str, token: &str, headers: &[(&'static str, String)]) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(4))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
-    let r = client.get(url).header("X-Install-Token", token).send().map_err(|e| e.to_string())?;
+    let mut rq = client.get(url).header("X-Install-Token", token);
+    for (k, v) in headers { rq = rq.header(*k, v); }
+    let r = rq.send().map_err(|e| e.to_string())?;
     if !r.status().is_success() { return Err(format!("console answered {}", r.status().as_u16())); }
     r.json::<Value>().map_err(|e| e.to_string())
 }
@@ -159,9 +204,8 @@ pub fn policy_allows(cfg: &Value, dir: &str, admin: &crate::admin_config::Admin,
     let Some(origin) = r.origin else {
         return Decision { allowed: if r.warning.is_some() { cached.unwrap_or(false) } else { true }, warning: r.warning };
     };
-    let mut url = match url::Url::parse(&format!("{origin}/api/policy")) { Ok(u) => u, Err(_) => return Decision { allowed: cached.unwrap_or(false), warning: r.warning } };
-    url.query_pairs_mut().append_pair("user", user).append_pair("device", device);
-    let allowed = match fetch(url.as_str(), token) {
+    let url = match url::Url::parse(&format!("{origin}/api/policy")) { Ok(u) => u, Err(_) => return Decision { allowed: cached.unwrap_or(false), warning: r.warning } };
+    let allowed = match fetch(url.as_str(), token, &identity_headers(user, device)) {
         Ok(j) => j.get("allowedTools").and_then(|v| v.as_array()).map(|a| a.iter().any(|x| x.as_str() == Some(tool))).unwrap_or(true),
         Err(_) => cached.unwrap_or(false),
     };
@@ -227,11 +271,30 @@ mod tests {
         assert!(d.warning.as_deref().unwrap_or("").contains(&evil.origin), "the user is told: {:?}", d.warning);
     }
 
+    // The allow-list check (lib.rs tool_allowed) asks the console for this user's and device's policy. The
+    // user and device go as headers, never in the URL, which proxies and access logs keep.
+    #[test]
+    fn the_allow_list_check_sends_user_and_device_as_headers_never_in_the_url() {
+        let (origin, heads) = record_heads(r#"{"allowedTools":["codex"]}"#);
+        let dir = scratch("idheaders");
+        write_test_binding(&dir, &origin);
+        let cfg = json!({ "installToken": "tok-SECRET-INSTALL", "tenant": "acme" });
+        let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "José Ü", "JDOE-LAPTOP", &real_fetch);
+        assert!(d.allowed);
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 1, "{heads:?}");
+        let request_line = heads[0].lines().next().unwrap();
+        assert!(request_line.starts_with("GET /api/policy"), "{request_line}");
+        for v in ["user=", "device=", "JDOE-LAPTOP", "Jos"] { assert!(!request_line.contains(v), "{v} in the URL: {request_line}"); }
+        assert!(heads[0].contains("\nx-moorai-user: Jos%C3%A9%20%C3%9C\n"), "{}", heads[0]);
+        assert!(heads[0].contains("\nx-moorai-device: JDOE-LAPTOP\n"), "{}", heads[0]);
+    }
+
     #[test]
     fn plain_http_server_url_is_refused_before_anything_is_sent() {
         let dir = scratch("http");
         let calls = RefCell::new(vec![]);
-        let fetch = |url: &str, tok: &str| { calls.borrow_mut().push((url.to_string(), tok.to_string())); Ok(json!({ "allowedTools": ["codex"] })) };
+        let fetch = |url: &str, tok: &str, _: &[(&'static str, String)]| { calls.borrow_mut().push((url.to_string(), tok.to_string())); Ok(json!({ "allowedTools": ["codex"] })) };
         let cfg = json!({ "serverUrl": "http://collector.example.net", "installToken": "tok-SECRET-INSTALL", "allowedTools": [] });
         let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch);
         assert!(calls.borrow().is_empty(), "token offered over plain http to a non-local host: {:?}", calls.borrow());
@@ -303,7 +366,7 @@ mod tests {
         let dir = scratch("tamper");
         std::fs::write(format!("{dir}/console.json"), r#"{"origin":"http://collector.example.net"}"#).unwrap();
         let calls = RefCell::new(0);
-        let fetch = |_: &str, _: &str| { *calls.borrow_mut() += 1; Ok(json!({})) };
+        let fetch = |_: &str, _: &str, _: &[(&'static str, String)]| { *calls.borrow_mut() += 1; Ok(json!({})) };
         let d = policy_allows(&json!({ "serverUrl": "https://app.moorai.dev", "installToken": "t" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch);
         assert_eq!(*calls.borrow(), 0);
         assert!(!d.allowed && d.warning.is_some());
@@ -313,7 +376,7 @@ mod tests {
     fn unprovisioned_installs_are_unrestricted_and_send_nothing() {
         let dir = scratch("unprov");
         let calls = RefCell::new(0);
-        let fetch = |_: &str, _: &str| { *calls.borrow_mut() += 1; Ok(json!({})) };
+        let fetch = |_: &str, _: &str, _: &[(&'static str, String)]| { *calls.borrow_mut() += 1; Ok(json!({})) };
         assert!(policy_allows(&json!({ "serverUrl": "https://app.moorai.dev" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch).allowed);
         assert!(policy_allows(&json!({ "installToken": "t" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch).allowed);
         assert_eq!(*calls.borrow(), 0);

@@ -19,6 +19,49 @@ for await (const m of query({ prompt, options: { hooks: moorAIHooks({ serviceId:
 (`prompts: "enforce"`, `toolResults: "advise"` to act on them). Options are documented at the top of
 [`src/index.mjs`](src/index.mjs).
 
+### Intent alignment
+
+`UserPromptSubmit` also records the task: the prompt passed to `query()` and every later user turn (a
+machine-injected `source` such as `system` is skipped). The prompt is scanned first and recorded only when
+the scan does not deny it: under `prompts: "enforce"` a denied prompt is blocked, and under `"observe"` it
+goes on to the model but is not the task, so the hosts it names stay out of scope. The runtime keeps only HMACs of the sites, paths,
+service names and labels the task mentions, per `session_id`, in memory under a random per-process key
+([`data/intent-server.mjs`](../../data/intent-server.mjs)); the prompt is never stored. A `PreToolUse` call
+that is already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and
+aimed at something the task never named is judged under `policy.intentAlignment`:
+
+| Mode | Effect |
+|---|---|
+| `"report"` (default) | one content-free alert per session and target (#64, `Action outside the stated task`); the decision is unchanged |
+| `"ask"` | an allow becomes an ask, which the headless rule settles (deny by default; `headlessAsk: "pass-through"` hands it to your `canUseTool`) |
+| `"block"` | deny, with a fixed reason per class ("an upload to a host your request never mentioned") |
+| `"off"` | nothing is captured or judged |
+
+A call the branch already denied is not judged again.
+`createMoorAI()` exposes the same step as `captureTask(session, prompt)` plus `toolCall({ ..., session })`,
+whose verdict carries `intent: {class, mode}` when it fires. Limits: it is lexical, asking whether the user
+named the destination, file or service, not whether the action serves the task; a request pasted from an
+untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task.
+**No task fails closed:** a risky call whose session has no live task (never captured, evicted past
+`intentStore.maxSessions`, default 1024, or idle past 24 h) is judged as class `task-unknown`, which
+`"block"` denies, `"ask"` asks and `"report"` alerts on. Unlike the hook, `"block"` therefore needs the
+task: it arrives through `UserPromptSubmit`, so a run whose prompt never reaches that hook has every risky
+call blocked. In `"report"` mode a call with no `session_id` at all is not judged and raises no alert.
+`createMoorAI({ intentStore: false })` turns the step off for a caller that judges intent itself with its own
+sessions (`moorai-model-proxy` does: its `toolCall` carries no session, so every risky call would be `task-unknown`).
+
+### Cascade limits
+
+`policy.cascadeLimits` (see the repository README, *Cascade limits*) is judged in `PreToolUse` per `session_id`,
+in memory under a random per-process key: sub-agent spawn rate, sub-agent depth (the hook input's `agent_id`;
+`PostToolUse(Agent)`'s `tool_response.agentId` binds a child to its spawner), the same call after consecutive
+failures (the `PostToolUseFailure` callback `moorAIHooks` registers), and a session held after repeated
+denials. `"report"` (default) alerts once per limit per session, `"ask"` raises an allow to ask (settled by the
+headless rule), `"block"` denies; a branch deny stays a deny. `createMoorAI()` exposes the inputs as
+`toolCall({ ..., session, agent, agentType, toolUseId })`, `toolFailure({ tool, input, session, agent })` and
+`spawnResult({ session, agent, toolUseId, childId })`; `createMoorAI({ cascade: false })` turns it off. The state
+is per process, so a restart forgets it.
+
 ## Scan content before it is embedded
 
 For an application that runs its own RAG or memory ingestion. A poisoned chunk in a retrieval index is
@@ -28,8 +71,11 @@ read back into a later user's context with no tool call; these helpers scan each
 ```js
 const report = await scanBeforeEmbed(chunks, { source: "kb/handbook" });
 // { action: "report" | "block", policyId,
-//   results: [{ index, verdict: "allow" | "flag" | "deny", threatIds, categories, reasons, findings }],
-//   allowed: [0, …], flagged: [2], denied: [] }
+//   results: [{ index, verdict: "allow" | "flag" | "hold" | "deny", threatIds, categories, reasons, findings, claims? }],
+//   allowed: [0, …], flagged: [2], held: [], denied: [] }
+
+// Who wrote the chunks (v1.20.0): a business-value claim from an untrusted or unknown author is #21.
+await scanBeforeEmbed(reviews, { source: { name: "kb/reviews", trust: "untrusted", kind: "customer" } });
 
 const addDocs = guardEmbed((docs) => vectorStore.addDocuments(docs), {
   source: "kb/handbook",
@@ -45,8 +91,14 @@ await addDocs(docs);
   #50, #51, #60, #68, #70, #72, #74) or a threat whose configured action is block or kill. The default is
   `"report"`: nothing is dropped. `findings` are content-free (`threatId`, `category`, `riskLevel`,
   `stage: "index"`, `detectorId`).
+- **Provenance.** `source` is a string label or `{ name?, trust?: "trusted" | "untrusted" | "unknown",
+  kind? }`. When the author is untrusted or unknown, a price or discount, a policy change, account or
+  payment details, or an authority claim ("confirmed by management") raises #21 (`kb-untrusted-claim`;
+  `claims` lists the kinds). `policy.indexProvenance.untrustedClaims`: `"report"` (default, `flag`), `"ask"`
+  (`hold`: listed in `held`, and `guardEmbed` does not embed it), `"block"` (`deny`) or `"off"`. A trusted
+  author, or a call that states no trust, is not checked.
 - **`guardEmbed(embedFn, opts)`** returns `async (chunks, ...rest) => embedFn(kept, ...rest)`. Denied
-  chunks are removed from the array `embedFn` receives; the report's indexes refer to the original array,
+  (and held) chunks are removed from the array `embedFn` receives; the report's indexes refer to the original array,
   so drop the matching ids in `onReport`. When every chunk is denied, `embedFn` is not called and the
   wrapper resolves to `[]`. Wrap the step that takes documents (`addDocuments`, an embeddings call whose
   output you store), not a layer whose caller expects one vector per input. `guarded.flush()` drains the

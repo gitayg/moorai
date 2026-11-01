@@ -112,3 +112,15 @@ export function parentSpanFor({ sessionId, agentId, agentType = "" }, { dir = ST
     }) ?? null;
   } catch { return null; }
 }
+
+// How a sub-agent's parent span is known, for the origin field (cli/origin.mjs parentBinding): "exact" when
+// PostToolUse(Agent) bound the child (bindSpawnResult), "inferred" when parentSpanFor matched the only
+// pending spawn of its type, "none" otherwise. Reads without the lock and changes nothing.
+export function parentBindingOf({ sessionId, agentId }, { dir = STATE_DIR, now = Date.now() } = {}) {
+  try {
+    if (!sessionId || typeof agentId !== "string" || !agentId) return "none";
+    const b = read(dir).binds[`${localHash(sessionId)}:${localHash(agentId)}`];
+    if (!b || !validSpanId(b.span) || !(now - b.ts < SPAWN_TTL_MS)) return "none";
+    return b.exact === true ? "exact" : "inferred";
+  } catch { return "none"; }
+}

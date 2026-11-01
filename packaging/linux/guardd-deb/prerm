@@ -1,0 +1,12 @@
+#!/bin/sh
+# moorai-guardd prerm: stop and disable the service and the socket on removal (not on upgrade, where the
+# postinst restarts the new binary).
+set -e
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      systemctl disable --now moorai-guardd.service moorai-guardd.socket || true
+    fi
+    ;;
+esac
+exit 0

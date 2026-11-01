@@ -53,6 +53,11 @@ impl SystemInfo for Platform {
     fn hostname(&self) -> String {
         todo!("gethostname / GetComputerNameExW(ComputerNameDnsHostname), same value the hook sends as device")
     }
+
+    fn login_name(&self, _uid: u32) -> Option<String> {
+        // A Windows peer is a SID, not a uid: no actor is derived, so only the actor-less policy is served.
+        None
+    }
 }
 
 /// <ProgramData> from HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList "ProgramData",

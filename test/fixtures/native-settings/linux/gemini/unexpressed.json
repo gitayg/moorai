@@ -1,0 +1,92 @@
+[
+  {
+    "source": "tagActions",
+    "item": "exec",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "network",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "read-private",
+    "effect": "omitted",
+    "reason": "tag-decided-from-content"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Monitor",
+    "effect": "omitted",
+    "reason": "gemini-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "PowerShell",
+    "effect": "omitted",
+    "reason": "gemini-tool-not-mapped"
+  },
+  {
+    "source": "egressRules",
+    "index": 0,
+    "id": "no-evil",
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressRules",
+    "index": 2,
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressRules",
+    "index": 3,
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressRules",
+    "index": 4,
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressRules",
+    "index": 5,
+    "fields": [
+      "host"
+    ],
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  },
+  {
+    "source": "egressDefault",
+    "effect": "omitted",
+    "reason": "gemini-no-network-policy"
+  }
+]

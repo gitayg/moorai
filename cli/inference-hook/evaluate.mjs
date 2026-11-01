@@ -25,7 +25,7 @@ export const safeName = (s) => String(s || "").replace(/[^A-Za-z0-9_.:\-]/g, "_"
 function toolItem(c) {
   const name = safeName(c.name) || "tool";
   const m = c.raw == null ? mapTool(c.name, c.input) : null;
-  if (m && (m.tool === "Bash" || m.tool === "PowerShell") && typeof m.input.command === "string") return { kind: "tool_call", name, stage: "prompt", ctx: {}, text: m.input.command };
+  if (m && (m.tool === "Bash" || m.tool === "PowerShell") && typeof m.input.command === "string") return { kind: "tool_call", name, stage: "prompt", ctx: { scope: "command" }, text: m.input.command };
   if (m && m.tool === "WebFetch") return { kind: "tool_call", name, stage: "prompt", ctx: { egress: true }, text: `${m.input.url || ""}\n${m.input.prompt || ""}` };
   return { kind: "tool_call", name, stage: "prompt", ctx: {}, text: c.raw != null ? String(c.raw) : JSON.stringify(c.input) };
 }

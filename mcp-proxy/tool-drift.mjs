@@ -38,6 +38,9 @@ import { toolIdentity } from "./tool-scan.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 
 export const TOOL_DRIFT_REASON = "MCP_TOOL_DRIFT";
+// A tool changed, added or shadowed after approval is reported under #25 (MCP / Connector Tool Poisoning),
+// which credits AML.T0109 AI Supply Chain Rug Pull for this before/after comparison.
+export const RUG_PULL_THREAT = 25;
 export const APPROVED_FILE = "mcp-tool-approved.json";
 export const MAX_APPROVED_TOOLS = 2048;   // per server baseline in a policy; a larger one is ignored as malformed
 const MAX_HWM_ENTRIES = 512;
@@ -157,6 +160,17 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
     verdicts.set(name, v);
   };
 
+  // FRESHNESS (tool-recheck.mjs): when this server's whole tool list was last judged in block mode. A
+  // one-page listing sets it when judged; a paged one when its last page is judged, to the time its
+  // first page was (an older listing, never a newer one). A listing that went unjudged, or the server's
+  // notifications/tools/list_changed, clears it (markStale), so the next block-mode call re-lists.
+  let freshAt = 0, chainAt = 0;
+  const markStale = () => { freshAt = 0; chainAt = 0; };
+  // The client may hold a listing MoorAI could not judge (invalidate). A re-list MoorAI makes itself shows
+  // what the server tells MoorAI, not what the client was told, so until a client listing is judged again
+  // it can quarantine a tool but never vouch for one.
+  let cleared = false;
+
   // A paged first sighting: the server had no baseline when page 1 of this listing arrived, so every
   // later page of the same listing is a first sighting too, not "added after" page 1. It ends with the
   // listing's last page (no nextCursor) or the next listing that starts again from page 1.
@@ -168,8 +182,14 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
   // `tightenOnly` = a listing the client may not have kept (the HTTP gateway: a late duplicate for an id
   // already answered, a message the MCP SDK would not dispatch, an id no outstanding tools/list carried):
   // it can quarantine a tool, never pass one, and moves neither the baseline nor the paging state.
+  // `own` = a whole listing MoorAI requested itself (tool-recheck.mjs): a tool name it no longer carries
+  // loses its verdict, so a call to a tool the server dropped is refused as not in a checked listing. It is
+  // always tighten-only for verdicts: it can quarantine a tool, never pass one or release a quarantine, and
+  // it moves no baseline; after an unjudged listing (invalidate) it is fully tighten-only.
   // → { keep, quarantined: [{ name, signals }], removed: [signal], fingerprints | null, changed }.
-  function evaluateListing(tools, { policy, complete, continued = false, last = true, tightenOnly = false }) {
+  function evaluateListing(tools, { policy, complete, continued = false, last = true, tightenOnly = false, own: ownListing = false }) {
+    if (ownListing) { continued = false; last = true; if (cleared) tightenOnly = true; }
+    else if (!tightenOnly) cleared = false;
     const approved = approvedBaselines(policy, dir);
     const local = loadBaseline(dir);
     let counter = 0;
@@ -179,7 +199,7 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       if (t.srv === srv) serverHasLocal = true;
     }
     if (tightenOnly) { complete = false; if (continued && pagedFirstSighting) serverHasLocal = false; }
-    else {
+    else if (!ownListing) { // the client's paging state; MoorAI's own listing is a separate whole list
       if (!continued) pagedFirstSighting = !serverHasLocal && !last;
       else if (pagedFirstSighting) serverHasLocal = false;
       if (last) pagedFirstSighting = false;
@@ -192,7 +212,9 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       seen.add(cur.key);
       fingerprints.push(cur);
       const signals = judgeTool(cur, ctx);
-      if (tightenOnly && !signals.length) { keep.push(tool); continue; }
+      // MoorAI's own listing never vouches: a server can answer it differently from the client, so a clean
+      // tool there neither replaces a quarantine the client's listing set nor moves the baseline.
+      if ((tightenOnly || ownListing) && !signals.length) { keep.push(tool); continue; }
       remember(name, { cur, signals });
       if (signals.length) { quarantined.push({ name, signals }); continue; }
       keep.push(tool);
@@ -205,6 +227,14 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       for (const k of known) if (!seen.has(k)) removed.push({ kind: "removed", category: REMOVED_CATEGORY, riskLevel: "Medium", token: `mcp:tool:removed:${k}` });
     }
     if (keep.length) saveBaseline(local, dir);
+    if (ownListing) {
+      const listed = new Set(tools.map((t) => String(t.name)));
+      for (const name of [...verdicts.keys()]) if (!listed.has(name)) verdicts.delete(name);
+      freshAt = Date.now();
+    } else if (!tightenOnly) {
+      if (!continued) chainAt = Date.now();
+      if (last && chainAt) { freshAt = chainAt; chainAt = 0; }
+    }
     return { keep, quarantined, removed, fingerprints: complete ? fingerprints : null, changed: quarantined.length > 0 };
   }
 
@@ -235,9 +265,15 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
   // A tools/list this server sent that could not be judged (over the line cap, unparseable, a judgement
   // that threw). What it advertised is unknown, so no earlier verdict may vouch for any tool: every call
   // is refused as not in a checked listing until a listing is judged again.
-  function invalidate() { verdicts.clear(); }
+  function invalidate() { verdicts.clear(); markStale(); cleared = true; }
 
-  return { evaluateListing, checkCall, observe, invalidate, has: (name) => verdicts.has(name) };
+  // Whether this server's whole list was judged less than `ms` ago (0: never fresh, re-list every call).
+  const freshWithin = (ms) => freshAt > 0 && ms > 0 && Date.now() - freshAt < ms;
+  // After an unjudged listing every call is refused until a client listing is judged, whatever a re-list
+  // would say (see `cleared`), so a re-list then is not worth sending.
+  const awaitingClientListing = () => cleared;
+
+  return { evaluateListing, checkCall, observe, invalidate, markStale, freshWithin, awaitingClientListing, has: (name) => verdicts.has(name) };
 }
 
 // The content-free fingerprints of a complete listing, posted so the console can pin them on approval

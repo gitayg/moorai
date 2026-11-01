@@ -1,6 +1,7 @@
 import { safeRegex } from "./safe-regex.js";
 import { globalMatches, replaceWithRestart } from "./regex-restart.js";
 import { normalizeVariants } from "../data/normalize.js";
+import { invisibleViews } from "../data/text-views.js";
 import { aggregateRisk, resolveScoring, scoreLabel } from "../data/risk-score.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
@@ -43,7 +44,10 @@ export class DetectionEngine {
   // stages also run the "prompt" detectors (secrets/PII/injection). Without this, dropped files and
   // OCR'd images were never threat-scanned. Prompt/output stay isolated.
   _wantStages(stage) { return (stage === "file" || stage === "index") ? ["prompt", stage] : [stage]; }
-  _inStage(d, want) { return (d.stages || [d.stage]).some((s) => want.includes(s)); }
+  // A detector-pack detector with a `scope` (data/pack-scope.js) is never stage-matched: it runs only where
+  // the caller names one of its kinds as ctx.scope, at any stage. Built-ins carry no scope.
+  _inStage(d, want) { return !d.scope && (d.stages || [d.stage]).some((s) => want.includes(s)); }
+  _runs(d, want, ctx) { return d.scope ? !!ctx && d.scope.includes(ctx.scope) : this._inStage(d, want); }
 
   // #5 — the choke-point for content the agent INGESTS INTO ITS CONTEXT without a user typing it and
   // without a tool call. Written for "a local vector store / RAG index before it's embedded", and it
@@ -106,7 +110,7 @@ export class DetectionEngine {
     const want = this._wantStages(stage);
 
     for (const d of this.detectors) {
-      if (!this._inStage(d, want)) continue;
+      if (!this._runs(d, want, ctx)) continue;
       const match = this._matchDetector(text, d, ctx);
       if (!match) continue;
 
@@ -125,6 +129,12 @@ export class DetectionEngine {
       if (!prev || finding.mode === "warn") byThreat.set(threat.id, finding);
     }
 
+    // Invisible-character views (data/text-views.js): the same rules over the text with zero-width
+    // characters and tag characters undone and long blank runs collapsed. Additive like the decode pass
+    // below, and fail-open. Runs only when the text holds such a character or run, so ordinary text costs
+    // nothing extra.
+    try { this._scanViews(text, want, byThreat, ctx); } catch { /* fail-open: keep the raw result */ }
+
     // Normalization / decode pre-pass — catch instructions hidden behind an encoding, a reversal, or
     // layers of both. Purely ADDITIVE: it only adds findings for threats the raw scan didn't already
     // flag, and is wrapped fail-open so a normalization error can never change the raw decision.
@@ -141,6 +151,25 @@ export class DetectionEngine {
         (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
         (b.threat.riskScore - a.threat.riskScore)
     );
+  }
+
+  // Every in-stage rule over each invisible-character view, for a threat the raw scan did not already
+  // raise. Excluded: the invisible-character detectors (#50), which must judge the original bytes (the
+  // view has the characters they look for removed), and a detector marked `rawOnly` (one that reads the
+  // layout the view collapses, like the blank-line padding signal).
+  _scanViews(text, want, byThreat, ctx) {
+    const views = invisibleViews(text);
+    if (!views.length) return;
+    for (const v of views) {
+      for (const d of this.detectors) {
+        if (d.threatId === 50 || d.rawOnly || !this._runs(d, want, ctx)) continue;
+        const threat = this.threat(d.threatId);
+        if (!threat || byThreat.has(threat.id)) continue;
+        const match = this._matchDetector(v, d, ctx);
+        if (!match) continue;
+        byThreat.set(threat.id, { detectorId: d.detectorId, mode: d.mode || "warn", hint: d.hint, match: this._clip(match), threat, obfuscated: "invisible" });
+      }
+    }
   }
 
   // Re-run the instruction-family detectors over bounded decoded/normalized variants of the input, and
@@ -284,7 +313,15 @@ export class DetectionEngine {
   // _firstMatch, so existing detectors are unaffected. refine also receives the FULL scanned text as
   // a second arg (ignored by string-only refines), so a proximity gate like taint-lite can look
   // beyond the matched span for a nearby source without widening the pattern.
+  // `gate(text, ctx)`, when a detector has one, is asked after a match is found and false drops the finding.
+  // Unlike refine it never changes how the patterns run (refine's path recompiles them through safeRegex,
+  // which refuses most hand-written built-ins), so a gate cannot silently lose a pattern.
   _matchDetector(text, d, ctx) {
+    const m = this._matchPatterns(text, d, ctx);
+    return m !== null && d.gate && !d.gate(text, ctx) ? null : m;
+  }
+
+  _matchPatterns(text, d, ctx) {
     if (!d.refine) return this._firstMatch(text, d.patterns);
     for (const p of d.patterns) {
       const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");

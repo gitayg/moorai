@@ -1,0 +1,77 @@
+name: windows-validate
+
+# Windows runtime validation on a real windows-latest runner: the hook, the PowerShell tool path (including
+# the hook launched through powershell.exe), the MCP gateway, the egress rules and proxy, MXC detection with
+# the real registry, and MXC enforcement in the hook. Two parts:
+#
+#   1. cli/moorai-windows-validate.mjs --strict --require-windows: every probe must pass, a skipped
+#      Windows-only probe is a failure here, and the content-free report is uploaded as an artifact.
+#   2. The Windows-only test file (test/windows-runtime.test.mjs, skipped everywhere else), the validator's
+#      own tests, and the MXC and PowerShell test files, one at a time as windows-js.yml runs its list.
+#
+# NOT YET RUN. This workflow was written without a Windows machine: its first run on GitHub is the first
+# Windows run of test/windows-runtime.test.mjs, test/windows-validate.test.mjs and the MXC test files listed
+# below (windows-js.yml adds a file only after a Windows 11 run; these have had none). Until it has run,
+# nothing here is evidence about Windows.
+#
+# Not listed: test/containment-enforce-hook.test.mjs and test/containment-enforce.test.mjs. They fake Windows on
+# POSIX (a win32 preload, backslash file names that are one flat name on a POSIX filesystem, reg.exe absent so
+# mxcCapable is null) and are not meant to run on Windows itself; the mxc-enforce probe above is their real-host
+# counterpart. The hook, gateway and egress test files already run on Windows in windows-js.yml.
+#
+# No `npm ci`: none of these files imports a dependency. core.autocrlf is off so fixtures keep LF endings.
+# TEMP/TMP point outside the user profile (step env: the runner context is not available at job level)
+# because test/home-guard.mjs treats the profile as the real home.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "${{ matrix.node }}"
+
+      - name: Validation report (strict, Windows required)
+        shell: bash
+        env:
+          TEMP: "${{ runner.temp }}"
+          TMP: "${{ runner.temp }}"
+        run: node cli/moorai-windows-validate.mjs --strict --require-windows --out "$RUNNER_TEMP/moorai-windows-validation-node${{ matrix.node }}.json"
+
+      - name: Windows runtime, validator, MXC and PowerShell tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          TEMP: "${{ runner.temp }}"
+          TMP: "${{ runner.temp }}"
+        run: >
+          node --test --test-concurrency=1 --import ./test/hermetic-env.mjs
+          test/windows-runtime.test.mjs test/windows-validate.test.mjs test/windows-validate-workflow.test.mjs
+          test/mxc-detect.test.mjs test/mxc-policy.test.mjs test/mxc-denials.test.mjs
+          test/powershell-hook.test.mjs
+
+      - name: Upload the validation report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: moorai-windows-validation-node${{ matrix.node }}
+          path: ${{ runner.temp }}/moorai-windows-validation-node${{ matrix.node }}.json
+          if-no-files-found: warn

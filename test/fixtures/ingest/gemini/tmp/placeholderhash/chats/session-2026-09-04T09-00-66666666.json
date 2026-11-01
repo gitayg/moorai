@@ -1,0 +1,31 @@
+{
+  "sessionId": "66666666-6666-4666-8666-666666666666",
+  "projectHash": "placeholderhash",
+  "startTime": "2026-09-04T09:00:00.000Z",
+  "lastUpdated": "2026-09-04T09:00:09.000Z",
+  "messages": [
+    {
+      "id": "l1",
+      "timestamp": "2026-09-04T09:00:01.000Z",
+      "type": "user",
+      "content": "PLACEHOLDER: list the files"
+    },
+    {
+      "id": "l2",
+      "timestamp": "2026-09-04T09:00:02.000Z",
+      "type": "gemini",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "lt1",
+          "name": "run_shell_command",
+          "args": {
+            "command": "cat .env"
+          },
+          "status": "success",
+          "timestamp": "2026-09-05T09:00:03.000Z"
+        }
+      ]
+    }
+  ]
+}

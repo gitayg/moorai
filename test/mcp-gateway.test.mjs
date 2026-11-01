@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
+import { hashWithKey, deriveKey } from "../cli/content-hash.mjs";
 import { startUpstream } from "../mcp-gateway/test/fake-upstream.mjs";
 import { rmTree, stopChild } from "./fs-cleanup.mjs";
 
@@ -142,6 +143,18 @@ test("GATEWAY: a secret in the arguments is denied with an MCP tool error carryi
   });
 });
 
+test("GATEWAY: a call to a server off the mcpAllow list is denied and reported under #25", async () => {
+  await scenario({ policy: { captureTier: "content-free", mcpAllow: ["github"] } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(3, "echo", { msg: "hi" }));
+    assert.equal(r.json.result.isError, true, r.text);
+    assert.equal(up.calls().length, 0);
+    await settle();
+    const a = con.alerts.find((x) => x.category === "MCP: unapproved server");
+    assert.ok(a, JSON.stringify(con.alerts.map((x) => x.category)));
+    assert.equal(a.threatId, 25);
+  });
+});
+
 test("GATEWAY: a LOCAL secret value (#65 secret egress) in the arguments is denied", async () => {
   const local = "ProjDbPassw0rd-9f8e7d6c5b4a";
   await scenario({ policy: { captureTier: "content-free" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` } }, async ({ con, up, base }) => {
@@ -151,6 +164,131 @@ test("GATEWAY: a LOCAL secret value (#65 secret egress) in the arguments is deni
     await settle();
     assert.ok(con.alerts.some((a) => a.threatId === 65), `no #65 alert: ${JSON.stringify(con.alerts.map((a) => a.threatId + ":" + a.category))}`);
     assert.ok(!JSON.stringify(con.alerts).includes(local), "the local secret value leaked into an alert");
+  });
+});
+
+test("GATEWAY: a local secret sent base64-encoded, and a token a remote result carried sent hex-encoded, are denied (#65)", async () => {
+  const local = "ProjDbPassw0rd-" + Math.random().toString(36).slice(2, 12);
+  const tok = "ghp_" + Array.from({ length: 36 }, (_, i) => "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"[(i * 7 + Date.now()) % 36]).join("");
+  await scenario({ policy: { captureTier: "content-free" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: `registry token ${tok}` } }, async ({ con, up, base }) => {
+    const r1 = await rpc(base, call(6, "create_issue", { title: "db", body: Buffer.from(local).toString("base64") }));
+    assert.equal(r1.json.result.isError, true, `base64 local secret was not denied: ${r1.text}`);
+    assert.equal(up.calls().length, 0);
+    const r2 = await rpc(base, call(7, "read_config", { name: "registry" }));
+    assert.notEqual(r2.json.result.isError, true, `the read was refused: ${r2.text}`);
+    const r3 = await rpc(base, call(8, "create_issue", { title: "t", body: Buffer.from(tok).toString("hex") }));
+    assert.equal(r3.json.result.isError, true, `hex session-read token was not denied: ${r3.text}`);
+    assert.equal(up.calls().length, 1, "the encoded token reached the upstream");
+    await settle();
+    const eg = con.alerts.filter((a) => a.threatId === 65 && Array.isArray(a.secretEgress));
+    assert.deepEqual(eg.map((a) => a.secretEgress.map((m) => [m.encoding, m.source])[0]), [["base64", "store"], ["hex", "session-read"]]);
+    const all = JSON.stringify(con.alerts);
+    for (const f of [local, tok, Buffer.from(local).toString("base64"), Buffer.from(tok).toString("hex")]) assert.ok(!all.includes(f), "a secret form leaked into an alert");
+  });
+});
+
+// An unverified-only #65 match: a 5 MB argument with a %XX escape makes a percent-decoded view past the
+// 4 MiB decoded-view limit, so with a local secret to look for the scan reports "scan-cap" and nothing
+// confirmed. secretEgress.unverified defaults to "ask"; outside server mode the gateway has no one to ask.
+test("GATEWAY: outside server mode an unverified-only #65 match (default ask) is refused, content-free; policy headlessAsk allow-with-report forwards it", async () => {
+  const local = "ProjDbPassw0rd-" + Math.random().toString(36).slice(2, 12);
+  const marker = "UNVERIFIEDMARKER" + Math.random().toString(36).slice(2, 10);
+  const big = marker + " %41 " + "c".repeat(5 * 1024 * 1024);
+  await scenario({ policy: { captureTier: "content-free" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: "ok" } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(13, "create_issue", { body: big }));
+    assert.equal(r.json.result.isError, true, `an unverified-only ask was forwarded: ${r.text.slice(0, 300)}`);
+    assert.match(r.text, /no approver/);
+    assert.equal(up.calls().length, 0, "the call reached the upstream");
+    await settle();
+    const eg = con.alerts.find((a) => a.threatId === 65 && Array.isArray(a.secretEgress));
+    assert.ok(eg, `no #65 alert: ${JSON.stringify(con.alerts.map((a) => a.threatId + ":" + a.category))}`);
+    assert.deepEqual(eg.secretEgress.map((m) => [m.encoding, m.source]), [["unverified", "scan-cap"]]);
+    assert.equal(eg.riskLevel, "Blocked");
+    const h = con.alerts.find((a) => a.contentHash === "headless-ask:deny");
+    assert.ok(h, `no no-approver alert: ${JSON.stringify(con.alerts.map((a) => a.category))}`);
+    assert.deepEqual(h.headlessAsk, { mode: "deny", source: "default" });
+    const all = JSON.stringify(con.alerts);
+    for (const f of [local, marker, "cccccccccccccccc"]) assert.ok(!all.includes(f), "argument or secret content leaked into an alert");
+  });
+  await scenario({ policy: { captureTier: "content-free", headlessAsk: "allow-with-report" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: "ok" } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(14, "create_issue", { body: big }));
+    assert.notEqual(r.json.result.isError, true, `allow-with-report did not forward: ${r.text.slice(0, 300)}`);
+    assert.equal(up.calls().length, 1);
+    await settle();
+    assert.ok(con.alerts.some((a) => a.contentHash === "headless-ask:allow"), `no allow-with-report alert: ${JSON.stringify(con.alerts.map((a) => a.category))}`);
+  });
+});
+
+test("GATEWAY: a session-read token after the 1 MiB mark of a 2 MB argument is denied; a clean 2 MB argument is forwarded (#65)", async () => {
+  const tok = "ghp_" + Array.from({ length: 36 }, (_, i) => "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"[(i * 11 + Date.now()) % 36]).join("");
+  const big = (mid) => "a".repeat(1100 * 1024) + " " + mid + " " + "b".repeat(900 * 1024);
+  await scenario({ policy: { captureTier: "content-free" }, upstream: { resultText: `registry token ${tok}` } }, async ({ up, base }) => {
+    const r0 = await rpc(base, call(9, "read_config", { name: "registry" }));
+    assert.notEqual(r0.json.result.isError, true, `the read was refused: ${r0.text}`);
+    const r1 = await rpc(base, call(10, "create_issue", { body: big(tok) }));
+    assert.equal(r1.json.result.isError, true, `raw token after 1 MiB was not denied: ${r1.text.slice(0, 300)}`);
+    const r2 = await rpc(base, call(11, "create_issue", { body: big(Buffer.from(tok).toString("base64")) }));
+    assert.equal(r2.json.result.isError, true, "base64 token after 1 MiB was not denied");
+    const n = up.calls().length;
+    const r3 = await rpc(base, call(12, "create_issue", { body: big("nothing here") }));
+    assert.notEqual(r3.json.result.isError, true, `a clean 2 MB argument was refused: ${r3.text.slice(0, 300)}`);
+    assert.equal(up.calls().length, n + 1);
+  });
+});
+
+// v1.38.1 — learning reads the whole (scanned) result and reports what it could not learn.
+const ghTok = (seed) => "ghp_" + Array.from({ length: 36 }, (_, i) => "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"[(i * seed + Date.now() + Math.floor(Math.random() * 36)) % 36]).join("");
+const GW_FILLER = "log line: request served, nothing of note, status ok, latency within budget\n";
+test("GATEWAY: a token after 300 KiB of a result is learned and caught hex-encoded; 5,000 junk tokens cannot crowd out a credential, and the route is held (no approver: refused)", async () => {
+  const tok = ghTok(13);
+  const pad = GW_FILLER.repeat(Math.ceil((300 * 1024) / GW_FILLER.length));
+  await scenario({ policy: { captureTier: "content-free" }, upstream: { resultText: `${pad}registry token ${tok}` } }, async ({ up, base }) => {
+    const r0 = await rpc(base, call(31, "read_config", { name: "registry" }));
+    assert.notEqual(r0.json.result.isError, true, `the read was refused: ${r0.text.slice(0, 200)}`);
+    const r1 = await rpc(base, call(32, "create_issue", { body: Buffer.from(tok).toString("hex") }));
+    assert.equal(r1.json.result.isError, true, `a token after 300 KiB of a result was not learned: ${r1.text.slice(0, 300)}`);
+    assert.equal(up.calls().filter((c) => c.json && c.json.method === "tools/call").length, 1, "the encoded token reached the upstream");
+  });
+  // 5,000 provider-shaped junk tokens, then a named credential: the credential is still learned (a confirmed
+  // hex match), and the route is held for what the cap left unlearned (in memory this also overflows the
+  // retained store, so the hold is not the learn cap's alone).
+  const api = Array.from({ length: 40 }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 62)]).join("");
+  const junk = Array.from({ length: 5000 }, (_, i) => ghTok(i % 31 + 1)).join("\n") + `\nAPI_TOKEN=${api}\n`;
+  await scenario({ policy: { captureTier: "content-free" }, upstream: { resultText: junk } }, async ({ con, up, base }) => {
+    const r0 = await rpc(base, call(33, "read_dump", {}));
+    assert.notEqual(r0.json.result.isError, true, `the read was refused: ${r0.text.slice(0, 200)}`);
+    const r1 = await rpc(base, call(34, "create_issue", { body: Buffer.from(api).toString("hex") }));
+    assert.equal(r1.json.result.isError, true, `the credential after 5,000 junk tokens leaked: ${r1.text.slice(0, 300)}`);
+    await settle();
+    const eg1 = con.alerts.filter((a) => a.threatId === 65 && Array.isArray(a.secretEgress));
+    assert.ok(eg1.length && eg1.at(-1).secretEgress.some((m) => m.encoding === "hex" && m.source === "session-read"), `the credential was not learned behind the junk: ${JSON.stringify(eg1.map((a) => a.secretEgress))}`);
+    const r2 = await rpc(base, call(35, "create_issue", { body: "nightly summary" }));
+    assert.equal(r2.json.result.isError, true, `a route whose result overflowed the learn cap forwarded an unverified call: ${r2.text.slice(0, 300)}`);
+    assert.match(r2.text, /no approver/);
+    assert.equal(up.calls().filter((c) => c.json && c.json.method === "tools/call").length, 1, "a held call reached the upstream");
+    await settle();
+    const eg = con.alerts.filter((a) => a.threatId === 65 && Array.isArray(a.secretEgress)).at(-1);
+    assert.deepEqual(eg.secretEgress.map((m) => [m.encoding, m.source]), [["unverified", "cap-overflow"]]);
+    assert.ok(!JSON.stringify(con.alerts).includes(api), "the credential leaked into an alert");
+  });
+});
+
+// An unverified-only #65 match on a call another rule already holds for approval (#39 at "justify"): the #65 ask
+// is still recorded, so the call is settled as a no-approver ask, never forwarded outside server mode.
+test("GATEWAY: outside server mode an unverified-only #65 match on a call another rule already marked ask is refused; the upstream gets nothing", async () => {
+  const local = "ProjDbPassw0rd-" + Math.random().toString(36).slice(2, 12);
+  const big = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE %41 " + "c".repeat(5 * 1024 * 1024);
+  await scenario({ policy: { captureTier: "content-free", threatPolicy: { 39: "justify" } }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: "ok" } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(36, "create_issue", { body: big }));
+    assert.equal(r.json.result.isError, true, `an ask with an unverified #65 match was forwarded: ${r.text.slice(0, 300)}`);
+    assert.match(r.text, /no approver/);
+    assert.match(r.text, /#39 .*could not check for a tracked secret/, "both the other rule's ask and the #65 ask should be named");
+    assert.equal(up.calls().filter((c) => c.json && c.json.method === "tools/call").length, 0, "the call reached the upstream");
+    await settle();
+    const eg = con.alerts.find((a) => a.threatId === 65 && Array.isArray(a.secretEgress));
+    assert.ok(eg, `no #65 alert: ${JSON.stringify(con.alerts.map((a) => a.threatId + ":" + a.category))}`);
+    assert.deepEqual(eg.secretEgress.map((m) => [m.encoding, m.source]), [["unverified", "scan-cap"]]);
+    assert.ok(!JSON.stringify(con.alerts).includes(local), "the local secret leaked into an alert");
   });
 });
 
@@ -176,6 +314,33 @@ test("GATEWAY: an injected tool result is flagged under the default policy and f
     const res = con.alerts.filter((a) => a.stage === "result");
     assert.ok(res.some((a) => a.threatId === 3), `result injection not flagged: ${JSON.stringify(con.alerts.map((a) => a.stage + ":" + a.threatId))}`);
     assert.ok(res.every((a) => a.tool === "gateway:weather"));
+  });
+});
+
+// #90: a card number in a tool result is reported as a data class (riskLevel Info, forwarded) unless the policy
+// names #90, #1 or the regulated tier; its hash is process-keyed, never the number or its install-token-keyed hash.
+test("GATEWAY: a card number in a tool result is #90 at Info and forwarded; with threatPolicy[1] block it is withheld; no number or tenant-keyed card hash in any alert", async () => {
+  const PAN = "4111 1111 1111 1111";
+  const TEXT = `Customer on file. Card ${PAN}, expires 12/26.`;
+  const tenant = (s) => hashWithKey(deriveKey("tok"), s);
+  const clean = (alerts) => { for (const a of alerts) { const s = JSON.stringify(a); for (const x of [PAN, PAN.replace(/\D/g, ""), tenant(PAN), tenant(PAN.replace(/\D/g, ""))]) assert.ok(!s.includes(x), `${x} in ${s}`); } };
+  await scenario({ policy: { captureTier: "full-capture" }, upstream: { resultText: TEXT } }, async ({ con, base }) => {
+    const r = await rpc(base, call(31, "crm", { id: 7 }));
+    assert.equal(r.json.result.content[0].text, TEXT, "a data-class finding on a result is not withheld by default");
+    await settle();
+    const card = con.alerts.filter((a) => a.stage === "result" && a.threatId === 90);
+    assert.equal(card.length, 1, JSON.stringify(con.alerts.map((a) => a.stage + ":" + a.threatId)));
+    assert.equal(card[0].riskLevel, "Info");
+    assert.match(card[0].contentHash, /^proc:[0-9a-f]{16}$/);
+    clean(con.alerts);
+  });
+  await scenario({ policy: { captureTier: "full-capture", threatPolicy: { 1: "block" } }, upstream: { resultText: TEXT } }, async ({ con, base }) => {
+    const r = await rpc(base, call(32, "crm", { id: 7 }));
+    assert.equal(r.json.result.isError, true, `threatPolicy[1] block did not withhold a card result: ${r.text}`);
+    await settle();
+    const card = con.alerts.filter((a) => a.stage === "result" && a.threatId === 90);
+    assert.equal(card[0].riskLevel, "Blocked");
+    clean(con.alerts);
   });
 });
 

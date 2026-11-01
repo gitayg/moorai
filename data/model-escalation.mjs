@@ -8,6 +8,8 @@
 import { hasDeviceKey, classifyWithProvider } from "./device-inference.mjs";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { STATE_DIR, statePath } from "../cli/state-dirs.mjs";
+import { getCachedVerdict, putCachedVerdict } from "./escalation-cache.mjs";
+import { createHash } from "node:crypto";
 
 // LOOPBACK ONLY. The zero-egress guarantee in the header is enforced here rather than asserted: the
 // port may be pointed elsewhere (a second Ollama, a test double) but the HOST may not, so no setting
@@ -114,13 +116,40 @@ export function recordEscalationOutcome(outcome, ms, backend = "") {
 // Drains what this process has recorded so the caller can emit it (and so a test can assert on it).
 export function takeEscalationOutcomes() { return OUTCOMES.splice(0); }
 
-// Cheap liveness probe so we don't hang the hook when no local model is running.
-export async function localModelAvailable(timeoutMs = 400) {
+// Is `model` among the installed names /api/tags lists? Ollama treats a bare name as its ":latest" tag.
+export function modelListed(names, model) {
+  const norm = (n) => (String(n).includes(":") ? String(n) : `${n}:latest`);
+  const want = norm(model);
+  return (names || []).some((n) => norm(n) === want);
+}
+
+// Cheap liveness probe so we don't hang the hook when no local model is running. It also checks that the
+// configured model is INSTALLED: an Ollama running without it (the default llama3:latest is not on every
+// machine) used to pass this probe, and every escalation then paid a /api/generate round trip that failed
+// with "model not found" and was recorded as "error". Now that case is "unavailable", like no Ollama at all.
+// A tag list that cannot be read is treated as present, so an Ollama version with a different tag shape
+// still gets asked (fail toward the second opinion, which is itself fail-open).
+export async function localModelAvailable(timeoutMs = 400, model = DEFAULT_MODEL) {
   try {
     const r = await fetch(localHost() + "/api/tags", { signal: AbortSignal.timeout(timeoutMs) });
-    return r.ok;
+    if (!r.ok) return false;
+    let names = null;
+    try {
+      const j = await r.json();
+      if (Array.isArray(j?.models)) names = j.models.flatMap((m) => [m?.name, m?.model]).filter(Boolean);
+    } catch { /* unreadable list: treat as present */ }
+    return names === null ? true : modelListed(names, model);
   } catch { return false; }
 }
+
+// classifyLocal's prompt up to the scanned text, and a short hash of it. The hash is part of the verdict
+// cache key (data/escalation-cache.mjs), so editing the criteria or this framing invalidates old verdicts.
+const LOCAL_PROMPT_HEAD =
+  "You are a security classifier for an AI coding agent. " +
+  CLASSIFIER_CRITERIA +
+  ' Respond with ONLY compact JSON: {"risk":true|false,"category":"short-label","confidence":0.0-1.0}. ' +
+  "CONTENT:\n";
+export const CLASSIFIER_PROMPT_ID = createHash("sha256").update(LOCAL_PROMPT_HEAD, "utf8").digest("hex").slice(0, 16);
 
 // Returns { flagged, category, confidence } or null (unavailable / unparseable / fail-open).
 // The prompt/text goes to the loopback model only; the caller reduces the result to a content-free
@@ -131,12 +160,13 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
   // to ADD false positives without adding recall is recorded, so the effect is diagnosable rather than
   // being silently blamed on the detectors.
   if (UNDERPOWERED_MODELS.has(model)) recordEscalationOutcome("underpowered", 0, "local");
-  const prompt =
-    "You are a security classifier for an AI coding agent. " +
-    CLASSIFIER_CRITERIA +
-    ' Respond with ONLY compact JSON: {"risk":true|false,"category":"short-label","confidence":0.0-1.0}. ' +
-    "CONTENT:\n" +
-    text.slice(0, 4000);
+  // F22: a verdict this device already got for the same text and model (data/escalation-cache.mjs; keyed
+  // hash only, bounded, fail-open). Recorded as answered by "local-cache" so the ledger still shows it.
+  // The key includes CLASSIFIER_PROMPT_ID, so a prompt change never reuses an older prompt's verdicts.
+  const keyOpts = { promptId: CLASSIFIER_PROMPT_ID };
+  const cached = getCachedVerdict(text, model, keyOpts);
+  if (cached) { recordEscalationOutcome("answered", 0, "local-cache"); return cached; }
+  const prompt = LOCAL_PROMPT_HEAD + text.slice(0, 4000);
   // Outcome recording is deliberately on EVERY exit path of this function: a silent null is the failure
   // mode this layer actually had in production (see OUTCOME_KINDS above).
   const t0 = Date.now();
@@ -152,11 +182,13 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
     const parsed = JSON.parse(j.response || "{}");
     if (!parsed || typeof parsed.risk !== "boolean") { recordEscalationOutcome("unparseable", Date.now() - t0, "local"); return null; }
     recordEscalationOutcome("answered", Date.now() - t0, "local");
-    return {
+    const verdict = {
       flagged: parsed.risk,
       category: String(parsed.category || "model-flagged").slice(0, 40),
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0))
     };
+    putCachedVerdict(text, model, verdict, keyOpts);
+    return verdict;
   } catch (e) {
     // AbortSignal.timeout rejects with a TimeoutError; anything else is a real error (connection
     // refused, malformed JSON body, …). Distinguishing them is the whole point of the ledger.

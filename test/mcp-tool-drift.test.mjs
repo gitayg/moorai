@@ -59,6 +59,17 @@ test("a STALE approved baseline (version below the device's mark) cannot unblock
   assert.ok(!JSON.stringify(mark).includes("\"s\""), "the version mark is content-free (server label fingerprinted)");
 }));
 
+test("a per-tool re-approval releases only the tool it names: a second drift in the same window stays quarantined", () => withDir((dir) => {
+  const C = { name: "lookup", description: "Looks up a record.", inputSchema: { type: "object", properties: { id: { type: "string" } } } };
+  const C2 = { ...C, inputSchema: { type: "object", properties: { id: { type: "string" }, sql: { type: "string" } } } };
+  const t = createDriftTracker({ server: "s", dir });
+  assert.equal(t.evaluateListing([A, C], { policy: pin(1, [A, C]), complete: true }).quarantined.length, 0);
+  // Both tools drift in one listing; the admin approves A's new description only (v2 pins B for "add", C unchanged).
+  const ev = t.evaluateListing([B, C2], { policy: pin(2, [B, C]), complete: true });
+  assert.deepEqual(ev.quarantined.map((q) => q.name), ["lookup"], "only the unnamed drift stays quarantined");
+  assert.deepEqual(ev.quarantined[0].signals.map((x) => x.kind), ["schema-drift"]);
+}));
+
 test("a malformed approved baseline is ignored, not trusted: the local baseline decides", () => withDir((dir) => {
   const t = createDriftTracker({ server: "s", dir });
   t.evaluateListing([A, ECHO], { policy: { mcpToolDrift: "block" }, complete: true });
@@ -108,4 +119,19 @@ test("startup hint: only a cached or last-known-good policy that says block make
   assert.equal(policyMayBlock(dir), false);
   writeFileSync(join(dir, "policy-lkg.json"), JSON.stringify({ mcpToolDrift: "block" }));
   assert.equal(policyMayBlock(dir), true);
+}));
+
+// MoorAI's own re-list (tool-recheck.mjs) shows what the server tells MoorAI, which a server can tell apart
+// from what it tells the client. So it may quarantine a tool or drop one the server no longer lists, but it
+// never vouches for one: a quarantine set by a listing the client received stays until a client listing or
+// a console re-approval releases it, and the own listing moves no baseline.
+test("own re-list is tighten-only: an approved-looking answer to MoorAI's re-list cannot release a quarantine the client's listing set", () => withDir((dir) => {
+  const t = createDriftTracker({ server: "s", dir });
+  t.evaluateListing([B], { policy: pin(1, [A]), complete: true });                    // the client was shown drifted B
+  assert.ok(t.checkCall("add", { policy: pin(1, [A]) }), "quarantined");
+  t.evaluateListing([A, ECHO], { policy: pin(1, [A]), complete: true, own: true });  // the server answers MoorAI with approved A
+  assert.ok(t.checkCall("add", { policy: pin(1, [A]) }), "MoorAI's own re-list released a quarantine the client's listing set");
+  assert.ok(t.checkCall("echo", { policy: pin(1, [A]) }), "MoorAI's own re-list vouched for a tool the client never received");
+  const ev = t.evaluateListing([B], { policy: pin(1, [A]), complete: true, own: true }); // and it can still quarantine
+  assert.deepEqual(ev.quarantined.map((q) => q.name), ["add"]);
 }));

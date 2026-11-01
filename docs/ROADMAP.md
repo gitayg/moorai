@@ -266,9 +266,10 @@ point of view; position and document *that* as the durable evidence store.
     exact core or dropped.
 
   **PRECISION DEBT (next wave's target list, from benign-corpus-v2):** `dlp-phone` fires on
-  `ghp_…0123456789` (trailing digits look like a phone number); `destructive-command` cannot distinguish
-  DISCUSSING a command from ISSUING one (`"explain the difference between git revert and git reset --hard"`);
-  `secret-*` fires on the canonical documentation placeholders this repo's own convention mandates
+  `ghp_…0123456789` (trailing digits look like a phone number); `destructive-command` tells DISCUSSING a
+  command from ISSUING one only on a person's turn the surface marks as prose (`ctx.prose`: the model proxy's
+  user turns, the hook's and the SDK's prompt scan for a person's prompt; docs/DETECTION_ENGINE.md §3), and still fires on a memory or
+  rules file that mentions one; `secret-*` fires on the canonical documentation placeholders this repo's own convention mandates
   (`AKIAIOSFODNN7EXAMPLE`, `ghp_ABCDEF…`); `inj-override-structural` fires on an override verb with a
   NON-AGENT object (`"the linter should ignore all previous rules"`); `dep-typosquat` fires on a prompt
   naming no package.
@@ -481,7 +482,7 @@ positioning carries over as "in your process, in your VPC: content never leaves 
   `toolResults: "advise"`). Not in process, and listed in each result's `notEvaluated`: circuit breaker,
   session risk, deletion volume, intent alignment, learned drift, MCP reputation, escalation, honeytokens,
   mask rewrite. `PostToolUse` does not apply the hook's inbound gates (it observes only). p50 per
-  `PreToolUse` on 2 KB: 1.99 ms, against 152–159 ms p50 for a shell hook process (docs/BENCHMARK.md).
+  `PreToolUse` on 2 KB: 1.99 ms, against 151 ms p50 for a shell hook process (docs/BENCHMARK.md).
 - **Tier 3 (shipped in v1.2.0):**
   - `moorai-serve` (`cli/moorai-serve.mjs`), a localhost sidecar on the same runtime: `POST /v1/scan`,
     `POST /v1/tool-call`, `GET /healthz`, content-free verdicts. Loopback only unless `--allow-remote` plus a

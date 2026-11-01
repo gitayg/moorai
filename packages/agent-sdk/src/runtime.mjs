@@ -15,19 +15,55 @@
 //     "pass-through"` returns the "ask" to the SDK, whose permission flow then hands it to the
 //     application's own `canUseTool` — for a service that has a real approver. Never the default.
 //   * enforcement without a token — server mode is management evidence; this surface never coaches.
+//
+// INTENT ALIGNMENT (data/intent-server.mjs). captureTask(session, prompt) records the user's task for a
+// session as keyed hashes in memory (the SDK's UserPromptSubmit, moorai-serve's POST /v1/task); toolCall
+// then judges an already-risky call with a `session` against it, after the branch verdict and before the
+// headless rule, as the hook's intentStep does. policy.intentAlignment: "report" (default: one alert per
+// session per target, verdict unchanged), "ask" (allow -> ask, which the headless rule then settles),
+// "block" (allow or ask -> deny), "off". A branch deny is not re-judged. The alert is the hook's category,
+// "Action outside the stated task" (#64, reason code INTENT_MISMATCH) with keyed hashes only; the verdict
+// gains `intent: { class, mode }`. The store's HMAC key is random per runtime (options.intentStore.key to
+// pin one) and never leaves the process. Lexical, with the hook's limits: it asks whether the user NAMED
+// the destination, file or service, not whether the action serves the task, and a pasted untrusted
+// request puts its hosts in scope. A risky call with no live task for its session (no session, never
+// captured, evicted, expired) is judged as class "task-unknown": not aligned, so ask/block fail closed and
+// report alerts. Unlike the hook, which skips a session with no task, so "block" needs the caller to
+// supply the task. One exception: in "report" mode a call with no session id at all is not judged.
+// options.intentStore false: this runtime does not judge intent at all (no store; captureTask records
+// nothing). For a caller that judges intent itself with its own sessions — moorai-model-proxy
+// (model-proxy/intent.mjs), whose toolCall carries no session and would otherwise be task-unknown.
+//
+// TASK-BOUND CALLS (data/task-bound.js, held by the same store). After intent alignment, toolCall judges the
+// call by the name the caller sent: (1) the object check — a high-impact call whose object fields
+// (policy.intentArgs, else the built-in recipient / account / path / URL / repository fields) name nothing
+// in the task is class "object-not-in-task", decided by policy.intentAlignment exactly as the classes above
+// (report alerts, ask asks, block denies; no live task is "task-unknown"); (2) task allowlists —
+// policy.taskAllowlists: when the session's task matches an entry (its keywords, or the explicit task id
+// set with setTaskId), a tool or argument value outside it is class "outside-task-allowlist", held at the
+// entry's default ("deny" or "ask", whatever intentAlignment says). An unreadable allowlist entry denies
+// what it would have covered and raises one "Task-bound policy invalid" alert per policy. Both read
+// the policy this runtime loaded and the root-owned admin binding (which wins key by key); the task is
+// captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
+import { createHmac, randomBytes } from "node:crypto";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, spanHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
+import { taskBoundLib, cascadeLib } from "./core.mjs";
 
-const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer } = hookCore;
+const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer, saferAlternativesFor } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
 const { hashWithKey, deriveKey, NO_KEY } = contentHashLib;
+const { spanHash } = spanHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
-const { decideIndexChunk, indexScanAction, INDEX_MAX_CHUNKS } = indexScanLib;
+const { decideIndexChunk, indexScanAction, indexSource, INDEX_MAX_CHUNKS } = indexScanLib;
+const { createIntentStore, intentModeFromPolicy, INTENT_CATEGORY, INTENT_CLASS_TEXT } = intentServerLib;
+// The TTL of a session-read secret: the session-risk window, resolved as the hook resolves it.
+const sessionRiskWindowMs = (policy) => { try { return sessionRiskLib.sessionRiskConfig(policy).windowMin * 60000; } catch { return 30 * 60000; } };
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -57,7 +93,7 @@ export function resolveSettings(options = {}, { env = process.env, system } = {}
   // A trusted source sits in `headless.system` (cli/server-mode.mjs headlessAskMode reads it after the
   // env-deny check), so an env "deny" still wins over every option, as it does on the hook.
   const headless = { ...sm.headless, system: HEADLESS_MODES.includes(optAsk) ? optAsk : sm.headless.system };
-  return { sm: { ...sm, serviceId, headless }, config, consoleConfigured, passThrough: optAsk === "pass-through" && !sm.headless.envDeny };
+  return { sm: { ...sm, serviceId, headless }, config, consoleConfigured, passThrough: optAsk === "pass-through" && !sm.headless.envDeny, admin: sys };
 }
 
 export async function createMoorAI(options = {}) {
@@ -78,6 +114,46 @@ export async function createMoorAI(options = {}) {
   const agentName = agentNamesLib.agentNameOf(surface);
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
+  const intent = options.intentStore === false ? null : createIntentStore(options.intentStore || {});
+  // #65 session-read secrets (cli/secret-taint.mjs): what inbound tool results carried, as keyed
+  // fingerprints in memory under a random per-process key, one tracker per owner (moorai-serve's bearer
+  // principal; "" otherwise) and session id. A call with a session id matches that session's tracker plus
+  // its owner's unattributed one; a call with none matches the union of its owner's live trackers.
+  let evictCtx = null;
+  const ownerKey = (o) => (typeof o === "string" ? o : "");
+  const sessKey = (x) => (typeof x === "string" ? x : "");
+  const post65 = (s, tool, sess, category, contentHash, secretTaint) => reporter.post({ threatId: 65, category, riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash, secretTaint, ...sess }, { prov: prov(s, "PostToolUse") });
+  const secrets = options.secretTracker === false ? null : secretTaintLib.memorySessions({
+    maxSessions: options.secretSessions || secretTaintLib.MAX_MEMORY_SESSIONS,
+    ...(options.secretEvictedMax ? { evictedMax: options.secretEvictedMax } : {}),
+    onEvict: ({ evictedLive, evictedMapTrimmed }) => {
+      if (!evictCtx) return;
+      if (evictedLive) post65(evictCtx.s, evictCtx.tool, evictCtx.sess, "Session secret tracking evicted a live session", "secret-evict", { evictedLive });
+      if (evictedMapTrimmed) post65(evictCtx.s, evictCtx.tool, evictCtx.sess, "Session secret tracking evicted-session map full", "secret-evict-map", { evictedMapTrimmed });
+    }
+  });
+  const trackerFor = (s, sess, session, owner) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries(ownerKey(owner), sessKey(session), { ttl: sessionRiskWindowMs(s.policy) }), overflowed: () => secrets.overflowed(ownerKey(owner), sessKey(session)), learn: (values, tool, cred, truncated) => learnValues(s, values, tool, sess, cred, session, owner, truncated) } : null);
+  // `from`: the caller's whole result (meta.learnFrom), when the scan text it passed was capped; learned
+  // through learnSource up to LEARN_TOTAL, so a secret past the scan cap is still tracked.
+  function learnInbound(s, text, tool, sess, session, owner, from) {
+    if (!secrets || tool === "WebFetch" || tool === "WebSearch") return;
+    try {
+      const src = from !== undefined && from !== null ? secretLearnLib.learnSource(from) : { text, truncated: false };
+      const r = secretLearnLib.learnableSecrets(src.text);
+      learnValues(s, r.values, tool, sess, false, session, owner, src.truncated || r.truncated);
+    } catch { /* tracking is evidence; never the verdict */ }
+  }
+  function learnValues(s, values, tool, sess, cred = false, session = "", owner = "", truncated = false) {
+    try {
+      if (!values.length && !truncated) return;
+      evictCtx = { s, tool, sess };
+      const r = secrets.learn(ownerKey(owner), sessKey(session), values, { ttl: sessionRiskWindowMs(s.policy), cred, truncated });
+      evictCtx = null;
+      if (r.reportLearnCap) post65(s, tool, sess, "Session secret learning truncated", "secret-learn-cap", { learnCap: true });
+      if (r.report) post65(s, tool, sess, "Session secret tracking cap reached", `secret-cap:${r.cap}`, { pool: r.pool, cap: r.cap, dropped: r.dropped, overQuota: r.overQuota, kept: r.size, retained: r.retained });
+      if (r.reportRetained) post65(s, tool, sess, "Session secret retained store full", `secret-retain:${r.retainCap}`, { retainCap: r.retainCap, retainedDropped: r.retainedDropped });
+    } catch { evictCtx = null; /* tracking is evidence; never the verdict */ }
+  }
 
   let state = null, loading = null, loadedAt = 0;
   async function loadPolicy() {
@@ -108,7 +184,7 @@ export async function createMoorAI(options = {}) {
 
   function report(s, findings, { tool, decision, event = "PreToolUse", sess = {} }) {
     for (const f of findings) {
-      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: hash(f.match || ""), ...sess }, { prov: prov(s, event) });
+      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: spanHash(f.threatId, f.match || "", hash), ...sess }, { prov: prov(s, event) });
     }
   }
   function reportSignals(s, signals, tool, event = "PreToolUse", sess = {}) {
@@ -150,46 +226,171 @@ export async function createMoorAI(options = {}) {
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
     const sess = sessionOf(meta.session);
+    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess, meta.session, meta.owner, meta.learnFrom);
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
-  // The verdict the hook reaches for one tool call (src/decide.mjs), settled for a headless run.
-  async function toolCall({ tool, input, cwd, permissionMode = "", session } = {}) {
+  // The user's task for a session (intent alignment), held as keyed hashes only. Returns content-free
+  // counts: { mode, captured, features }.
+  // owner: the principal the session belongs to (moorai-serve: the bearer token presented); sessions are
+  // namespaced by it, so one principal cannot set, replace or evict another's task.
+  // authenticated (default true): whether an authenticated task writer sent it (moorai-serve passes false
+  // when it has no token); "ask" and "block" judge only against authenticated captures.
+  async function captureTask(session, prompt, owner, authenticated = true) {
     const s = await ready();
-    const v = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
+    const mode = intentModeFromPolicy(s.policy);
+    const lists = taskBoundLib.hasAllowlists(taskBoundLib.resolveTaskBound(s.policy, settings.admin));
+    if ((mode === "off" && !lists) || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
+    const r = intent.captureTask(session, prompt, owner, { authenticated, bound: { policy: s.policy, admin: settings.admin } });
+    return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
+  }
+
+  // Intent alignment on the branch verdict v (see the header). Returns v, or a copy with the adjusted
+  // decision, reason and alternatives plus `intent`. Reasons are fixed text per class: no argument, no task.
+  function intentStep(s, v, input, session, sess, owner) {
+    if (v.decision === "deny" || !intent) return v;
+    const mode = intentModeFromPolicy(s.policy);
+    if (mode === "off") return v;
+    // Report mode skips a call with NO session id at all, so callers that never send one see no new
+    // alerts; ask and block still judge it (task-unknown), and a supplied id with no task alerts in every mode.
+    if (mode === "report" && (typeof session !== "string" || !session)) return v;
+    const j = intent.judge(session, v.tool, input, v.findings, owner, { authenticatedOnly: mode === "ask" || mode === "block" });
+    if (!j || j.aligned) return v;
+    if (j.firstForTarget) {
+      reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, contentHash: hash(`intent:${j.class}`), intent: { class: j.class, mode, targetHash: j.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+    }
+    const why = `action outside the stated task — ${INTENT_CLASS_TEXT[j.class]}`;
+    const w = { ...v, intent: { class: j.class, mode } };
+    if (mode === "block") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]) };
+    if (mode === "ask") {
+      if (v.decision === "allow") return { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]) };
+      return { ...w, reason: `${v.reason}, ${why}` };
+    }
+    return w;
+  }
+
+  // The session's explicit task id, which selects the task allowlist entry naming it (data/task-bound.js).
+  // owner / authenticated as captureTask; an id an unauthenticated writer set never selects an entry.
+  async function setTaskId(session, taskId, owner, authenticated = true) {
+    await ready();
+    if (!intent || typeof intent.setTaskId !== "function") return { taskId: false };
+    return intent.setTaskId(session, taskId, owner, { authenticated });
+  }
+
+  // Task-bound checks on v (see the header). Returns v, or a copy with the adjusted decision and reason plus
+  // `intent`. Reasons are fixed text: the class, the entry's name and a reason token; never an argument.
+  const problemsPosted = new Set();
+  function boundStep(s, v, tool, input, session, sess, owner) {
+    if (v.decision === "deny" || !intent || typeof intent.judgeBound !== "function") return v;
+    const mode = intentModeFromPolicy(s.policy);
+    const objects = mode !== "off" && !(mode === "report" && (typeof session !== "string" || !session)) && !(v.intent && v.intent.class === "task-unknown");
+    const r = intent.judgeBound(session, typeof tool === "string" ? tool : v.tool, input, { policy: s.policy, admin: settings.admin }, owner, { authenticatedOnly: mode === "ask" || mode === "block", objects });
+    if (r.problems.length && !problemsPosted.has(`${s.policyId}\0${r.problems.join(",")}`)) {
+      problemsPosted.add(`${s.policyId}\0${r.problems.join(",")}`);
+      reporter.post({ threatId: 0, category: "Task-bound policy invalid", riskLevel: "High", stage: "policy", tool: `hook:${v.tool}`, reasonCode: REASON.FAIL_CLOSED, contentHash: hash(`task-bound-policy:${r.problems.join(",")}`), taskBoundPolicy: { problems: r.problems }, ...sess }, { prov: prov(s, "PreToolUse") });
+    }
+    let w = v;
+    const o = r.objects;
+    if (o && !o.aligned) {
+      if (o.firstForTarget) reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, reasonCode: REASON.INTENT_MISMATCH, contentHash: hash(`intent:${o.class}`), intent: { class: o.class, mode, targetHash: o.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+      const why = `action outside the stated task — ${INTENT_CLASS_TEXT[o.class]}`;
+      w = { ...w, intent: w.intent || { class: o.class, mode } };
+      if (mode === "block") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: { class: o.class, mode } };
+      if (mode === "ask") w = w.decision === "allow" ? { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: { class: o.class, mode } } : { ...w, reason: `${w.reason}, ${why}` };
+    }
+    const a = r.allowlist;
+    if (a) {
+      if (a.firstForTarget) reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: a.decision === "deny" ? "Blocked" : "High", stage: "behavior", tool: `hook:${v.tool}`, reasonCode: REASON.INTENT_MISMATCH, contentHash: hash(`intent:${a.class}`), intent: { class: a.class, mode: a.decision, task: a.task, reason: a.reason, targetHash: a.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+      const why = `outside the task allowlist${a.task ? ` "${a.task}"` : ""} (${a.reason})`;
+      const tag = { class: a.class, mode: a.decision, task: a.task };
+      if (a.decision === "deny") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: tag };
+      w = w.decision === "allow" ? { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: tag } : { ...w, reason: `${w.reason}, ${why}` };
+    }
+    return w;
+  }
+
+  // CASCADE LIMITS (data/cascade-limits.js), per session id (namespaced by owner) in memory, ids keyed with a
+  // random per-runtime HMAC key: sub-agent spawn rate and depth (agent: the hook input's agent_id; a spawn's
+  // result binds its child through spawnResult), the same call after consecutive failures (toolFailure), and a
+  // session held after repeated denials. policy.cascadeLimits decides: "report" (default) alerts once per limit
+  // per session, "ask" raises an allow to ask (then settled by the headless rule), "block" denies; a branch deny
+  // stays a deny. A call with no session id is not counted. options.cascade false: off.
+  const cascade = options.cascade === false ? null : cascadeLib.cascadeMemory();
+  const ckey = randomBytes(32);
+  const ch = (x) => createHmac("sha256", ckey).update(x).digest("hex").slice(0, 16);
+  const cSession = (session, owner) => (typeof session === "string" && session ? ch(`s:${ownerKey(owner)}\0${session}`) : "");
+  const cAgent = (a) => (typeof a === "string" && a ? ch(`a:${a}`) : "");
+  function cascadeStep(s, v, { tool, input, session, owner, agent, agentType, toolUseId, sess }) {
+    const sk = cSession(session, owner);
+    if (!cascade || !sk) return v;
+    const cfg = cascadeLib.cascadeConfig(s.policy);
+    if (cascadeLib.cascadeOff(cfg)) return v;
+    const ti = input && typeof input === "object" ? input : {};
+    const r = cascade.assess(sk, { agent: cAgent(agent), agentType: typeof agentType === "string" && agentType ? ch(`t:${agentType}`) : "", sig: ch(cascadeLib.callText(tool, ti)), spawn: tool === "Agent" || tool === "Task", spawnType: typeof ti.subagent_type === "string" && ti.subagent_type ? ch(`t:${ti.subagent_type}`) : "", spawnId: typeof toolUseId === "string" && toolUseId ? ch(`u:${toolUseId}`) : "" }, Date.now(), cfg);
+    for (const a of r.alerts) reporter.post({ ...a, tool: `hook:${v.tool}`, ...sess }, { prov: prov(s, "PreToolUse") });
+    if (!r.level || v.decision === "deny") return v;
+    const w = { ...v, cascade: { level: r.level } };
+    if (r.level === "block") return { ...w, decision: "deny", reason: r.reason, alternatives: [] };
+    return v.decision === "allow" ? { ...w, decision: "ask", reason: r.reason, alternatives: [] } : { ...w, reason: `${v.reason}, ${r.reason}` };
+  }
+  // A failed tool call (the SDK's PostToolUseFailure), and a spawn's result naming its child (PostToolUse(Agent)
+  // tool_response.agentId), for the cascade limits.
+  function toolFailure({ tool, input, session, owner, agent } = {}) {
+    const sk = cSession(session, owner);
+    if (cascade && sk) cascade.failure(sk, { agent: cAgent(agent), sig: ch(cascadeLib.callText(tool, input && typeof input === "object" ? input : {})) }, Date.now());
+  }
+  function spawnResult({ session, owner, agent, toolUseId, childId } = {}) {
+    const sk = cSession(session, owner);
+    if (cascade && sk && cAgent(childId)) cascade.bind(sk, { caller: cAgent(agent), child: cAgent(childId), spawnId: typeof toolUseId === "string" && toolUseId ? ch(`u:${toolUseId}`) : "" }, Date.now());
+  }
+
+  // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment (a call
+  // with no session has no task: a risky one is task-unknown), the task-bound checks and the cascade limits,
+  // then settled for a headless run.
+  async function toolCall({ tool, input, cwd, permissionMode = "", session, owner, agent, agentType, toolUseId } = {}) {
+    const s = await ready();
     const sess = sessionOf(session);
-    report(s, v.findings, { tool: v.tool, decision: v.decision, sess });
-    reportSignals(s, v.signals, v.tool, "PreToolUse", sess);
+    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess, session, owner) });
+    report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
+    reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
+    const v = cascadeStep(s, boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner), { tool, input, session, owner, agent, agentType, toolUseId, sess });
     const st = settle(s, v, { tool: v.tool, permissionMode, sess });
+    if (st.decision === "deny" && cascade && !v.cascade && cSession(session, owner)) cascade.denied(cSession(session, owner), Date.now(), cascadeLib.cascadeConfig(s.policy));
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
-    return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
+    return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(v.intent ? { intent: v.intent } : {}), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
   // The index stage (cli/index-scan.mjs): chunks an application is about to embed, one verdict each —
-  // "allow" (no finding), "flag" (reported, kept) or "deny" (policy.indexScanAction "block" and an
-  // instruction-carrying or blocked threat). Report-first: no policy, no deny. Never settled by the
-  // headless rule — nothing here asks. Content-free: one alert per finding (threat, category, risk,
-  // stage "index", a keyed hash of the matched span, and a keyed hash of `source` — never the source
-  // name itself, which is often a path or a URL). The verdicts never carry chunk text.
+  // "allow" (no finding), "flag" (reported, kept), "hold" (a business-value claim from an untrusted or
+  // unknown author under policy.indexProvenance.untrustedClaims "ask": keep it out of the index until a
+  // person reviews it) or "deny" (policy.indexScanAction "block" and an instruction-carrying or blocked
+  // threat, or untrustedClaims "block"). Report-first: no policy, no deny. Never settled by the headless
+  // rule — nothing here asks a person. Content-free: one alert per finding (threat, category, risk, stage
+  // "index", a keyed hash of the matched span, and a keyed hash of the source name — never the name
+  // itself, which is often a path or a URL). The verdicts never carry chunk text; a claim verdict carries
+  // its claim kinds (price, policy, payment, authority).
+  // source: a string label, or { name?, trust?: "trusted" | "untrusted" | "unknown", kind? } (indexSource).
   async function scanForIndex(chunks, { source, session } = {}) {
     if (!Array.isArray(chunks)) throw new TypeError("chunks must be an array");
     if (chunks.length > INDEX_MAX_CHUNKS) throw new RangeError(`at most ${INDEX_MAX_CHUNKS} chunks per call`);
     const s = await ready();
-    const sourceHash = typeof source === "string" && source ? hash(`index-source:${source}`) : undefined;
+    const src = indexSource(source);
+    const sourceHash = src.name ? hash(`index-source:${src.name}`) : undefined;
     const sess = sessionOf(session);
-    const results = [], allowed = [], flagged = [], denied = [];
+    const results = [], allowed = [], flagged = [], held = [], denied = [];
+    const decisionOf = { deny: "deny", hold: "ask" };
     for (let i = 0; i < chunks.length; i++) {
-      const r = decideIndexChunk(s.engine, s.policy, chunks[i]);
+      const r = decideIndexChunk(s.engine, s.policy, chunks[i], { source });
       for (const f of r.findings) {
-        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: r.verdict === "deny" ? "deny" : "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
+        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: decisionOf[r.verdict] || "notify", contentHash: spanHash(f.threatId, f.match || "", hash), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
       }
-      (r.verdict === "deny" ? denied : r.verdict === "flag" ? flagged : allowed).push(i);
-      results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings) });
+      ({ deny: denied, hold: held, flag: flagged }[r.verdict] || allowed).push(i);
+      results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings), ...(r.claims.length ? { claims: r.claims } : {}) });
     }
-    return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, denied };
+    return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, held, denied };
   }
 
-  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
+  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough, admin: settings.admin }, ready, scan, toolCall, toolFailure, spawnResult, captureTask, setTaskId, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
 }

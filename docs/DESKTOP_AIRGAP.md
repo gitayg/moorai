@@ -52,7 +52,7 @@ The webview uses them as follows (`src/api.js`):
 | Calls with the install token (policy, alerts, prompt events, device and agent-posture reports) | the administrator-provisioned console, else the recorded console |
 | Enrolment with a bare token, and in-app signup (`enrolBase()`) | the administrator-provisioned console, else the recorded console when an enrolment in this app recorded it, else the cloud |
 | Enrolment with a link, `https://<console>/d/<token>` | the console in the link |
-| The default policy of an unenrolled device (`serverBase()`) | the administrator-provisioned console, else the recorded console, else as for enrolment |
+| The policy of an unenrolled device | none: an unenrolled device makes no policy request and runs on the built-in defaults |
 
 A recorded console that came from the first-use record of `config.json` is not where a bare token goes,
 because on a device that never enrolled the agent can have planted that `config.json`. localStorage's
@@ -84,7 +84,7 @@ command `console_fetch` (`src-tauri/src/console_http.rs`):
 
 - **Calls with the install token:** the host picks the recorded console and attaches the token. The
   token never crosses into the webview's request, and the webview cannot name the origin.
-- **Calls without a credential** (enrolment, signup, the default policy) go to the origin the webview
+- **Calls without a credential** (enrolment, signup and its claim) go to the origin the webview
   names, chosen as in the table above. No token is attached.
 - **Rules for every call:**
   - https only, with plain http allowed for localhost;
@@ -106,6 +106,10 @@ The updater's endpoints are chosen at runtime, for each check (`src-tauri/src/up
 | Administrator-provisioned console (managed `ServerURL` or the admin-owned machine file), or a console the user enrolled to in the app, that is not a MoorAI cloud origin (the administrator's wins) | `<console>/api/update` only |
 | Unprovisioned, on the MoorAI cloud, or bound only by first-use migration of `~/.moorai/config.json` (that file is user- and agent-writable, so it never chooses the update source; MDM deployments set `ServerURL` instead) | `https://app.moorai.dev/api/update`, then `https://moorai.glick.run/api/update` |
 | Updates turned off by an administrator | none: no request is made |
+
+Each check is a plain `GET` of the endpoint URL, which has no query string or template variables, with the
+updater's user agent (`tauri-plugin-updater/<version>`) and `Accept: application/json`: no user, device,
+tenant or install token rides it, enrolled or not.
 
 `serverUrl` and `updates` in `~/.moorai/config.json` play no part: a value planted there neither points
 update checks at another server nor stops them.

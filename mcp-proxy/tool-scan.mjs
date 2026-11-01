@@ -96,7 +96,8 @@ export function toolsOfResponse(msg) {
 //   result.tools present  -> a tools/list; the tool stage owns it, and double-scanning it would
 //                            double every tool-poisoning alert.
 //   msg.method present    -> a server->client REQUEST or notification (sampling/createMessage,
-//                            notifications/message). Not a result, whatever else it carries.
+//                            notifications/message). Not a result, whatever else it carries; a
+//                            sampling or elicitation request is judged by ./sampling-scan.mjs.
 //   msg.error present     -> a JSON-RPC error; there is no result content to ingest.
 //   non-object result     -> nothing to walk.
 //
@@ -117,7 +118,7 @@ export function resultOfResponse(msg) {
 // megabytes of base64 that no text detector can read; harvesting them would spend the entire byte
 // budget on noise and buffer the exact thing the caps exist to avoid. Skipped by key, and declared
 // as uncovered rather than quietly dropped.
-const BINARY_KEYS = new Set(["data", "blob"]);
+export const BINARY_KEYS = new Set(["data", "blob"]);
 
 // Harvest the model-visible STRINGS out of a result, bounded three ways at once (nodes, depth, total
 // bytes). Every string value is taken, not only `content[].text`: `structuredContent` values, a

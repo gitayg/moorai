@@ -346,10 +346,10 @@ pub fn gather_and_decide(fetch: bool, memory: Option<&Value>, stored: Option<&Va
     let mut live_err = None;
     let live = if fetch {
         let mut q = url::form_urlencoded::Serializer::new(String::new());
-        q.append_pair("tenant", &tenant).append_pair("user", &crate::platform::username()).append_pair("device", &crate::platform::hostname());
+        q.append_pair("tenant", &tenant);
         let req = crate::console_http::ConsoleRequest { method: "GET".into(), path: format!("/api/policy?{}", q.finish()), body: None, credentialed: true, base: None, client_id: None };
         crate::console_http::target(&req, &crate::console_binding::host_dir(), &cfg, &admin)
-            .and_then(|(url, token)| crate::console_binding::real_fetch(url.as_str(), token.as_deref().unwrap_or("")))
+            .and_then(|(url, token)| crate::console_binding::real_fetch(url.as_str(), token.as_deref().unwrap_or(""), &crate::console_binding::identity_headers(&crate::platform::username(), &crate::platform::hostname())))
             .map_err(|e| live_err = Some(e)).ok()
     } else { None };
     let root_hwm = machine_file("policy-hwm.json");
@@ -680,5 +680,32 @@ mod tests {
         assert_eq!((d.policy.mode, d.status.as_str()), (Mode::Coach, "admin"));
         assert!(d.policy.approved.contains("com.openai.chat"));
         assert!(d.verified.is_none() && !d.save);
+    }
+
+    // The live policy fetch names the tenant only; the user and device go as headers, never in the URL.
+    #[test]
+    fn the_live_fetch_sends_user_and_device_as_headers_never_in_the_url() {
+        let _g = crate::console_binding::TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (origin, heads) = crate::console_binding::record_heads(r#"{}"#);
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let home = std::env::temp_dir().join(format!("moorai-cgp-home-{}-{n}", std::process::id())).to_string_lossy().into_owned();
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let saved: Vec<(&str, Option<String>)> = [var, "LOCALAPPDATA", "XDG_DATA_HOME"].into_iter().map(|k| (k, std::env::var(k).ok())).collect();
+        std::env::set_var(var, &home);
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("XDG_DATA_HOME");
+        std::fs::create_dir_all(format!("{home}/.moorai")).unwrap();
+        std::fs::write(format!("{home}/.moorai/config.json"), json!({ "tenant": "acme", "installToken": "tok-SECRET-INSTALL" }).to_string()).unwrap();
+        let dir = crate::console_binding::host_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::console_binding::write_binding(&dir, &origin, "enrolment").unwrap();
+        let _ = gather_and_decide(true, None, None, None);
+        for (k, v) in saved { match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) } }
+        let _ = std::fs::remove_dir_all(&home);
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 1, "{heads:?}");
+        assert_eq!(heads[0].lines().next().unwrap(), "GET /api/policy?tenant=acme HTTP/1.1");
+        assert!(heads[0].contains(&format!("\nx-moorai-user: {}\n", crate::console_binding::header_value(&crate::platform::username()))), "{}", heads[0]);
+        assert!(heads[0].contains(&format!("\nx-moorai-device: {}\n", crate::console_binding::header_value(&crate::platform::hostname()))), "{}", heads[0]);
     }
 }

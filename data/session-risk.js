@@ -24,7 +24,14 @@
 // (cli/session-state.mjs) hashes every host and path with a device key before assessSessionRisk sees it,
 // so neither the state nor an alert ever holds a host, a path, a command or a byte of content — only
 // keyed hashes, flags, counts and timestamps.
+//   origin       reading a file that came from outside (cli/file-origin.mjs: a quarantine / Zone.Identifier mark,
+//                a download directory), extracting an outside archive, running an outside file, or removing a
+//                file's origin mark taints the session by ORIGIN for `windowMin`, with no content analysis. Inside
+//                that window the actions in data/origin-taint.js ORIGIN_GATES take policy.sessionRisk.originTaint
+//                ("off" | "notify" | "ask" | "block", default "notify"; per class sessionRisk.originGates), set by
+//                the signed policy or the admin binding. Independent of `mode`.
 import { actionTargets, siteOf } from "./intent-alignment.js";
+import { ORIGIN_LEVELS, ORIGIN_DEFAULT_LEVEL, ORIGIN_GATE_CLASSES, strictestLevel, originReason } from "./origin-taint.js";
 
 export const TAINT_THREATS = new Set([2, 3, 40, 50, 60, 70, 72, 74]); // injection, indirect, second-order, hidden text, rules-file poisoning, AI-only cloaking, metadata, self-replication
 const CRED_THREATS = new Set([39, 55]);                               // secret values, credential-file access
@@ -43,12 +50,23 @@ export const SESSION_RISK_DEFAULTS = {
 };
 const posNum = (v, d) => (Number.isFinite(v) && v > 0 ? v : d);
 
-// policy.sessionRisk = { mode, threshold, windowMin, ... }. Malformed fields fall back to the default.
-export function sessionRiskConfig(policy) {
+// policy.sessionRisk = { mode, threshold, windowMin, ..., originTaint, originGates }. Malformed fields fall back to
+// the default. `admin` is the root-owned admin binding (cli/server-mode.mjs systemConfig): its
+// sessionRisk.originTaint and sessionRisk.originGates win over the signed policy's, the precedence failMode uses
+// (cli/fail-mode.mjs). Neither argument is ever user-writable state.
+export function sessionRiskConfig(policy, { admin = null } = {}) {
   const p = policy && typeof policy.sessionRisk === "object" && policy.sessionRisk ? policy.sessionRisk : {};
+  const a = admin && typeof admin === "object" && admin.sessionRisk && typeof admin.sessionRisk === "object" ? admin.sessionRisk : {};
   const out = { mode: ["report", "ask", "off"].includes(p.mode) ? p.mode : SESSION_RISK_DEFAULTS.mode };
   for (const k of Object.keys(SESSION_RISK_DEFAULTS)) if (k !== "mode") out[k] = posNum(p[k], SESSION_RISK_DEFAULTS[k]);
   out.maxSessions = Math.floor(out.maxSessions);
+  const lvl = (v) => (ORIGIN_LEVELS.includes(v) ? v : null);
+  out.originTaint = lvl(a.originTaint) || lvl(p.originTaint) || ORIGIN_DEFAULT_LEVEL;
+  out.originGates = {};
+  for (const c of ORIGIN_GATE_CLASSES) {
+    const v = lvl(a.originGates && a.originGates[c]) || lvl(p.originGates && p.originGates[c]);
+    if (v) out.originGates[c] = v;
+  }
   return out;
 }
 
@@ -184,10 +202,54 @@ function cleanState(state, now) {
       steps: s.steps.filter((x) => Array.isArray(x) && x.length === 3 && x.every(num)).slice(-MAX_STEPS),
       reads: keyMap(s.reads), hosts: keyMap(s.hosts),
       xfer: Array.isArray(s.xfer) ? s.xfer.filter((x) => Array.isArray(x) && x.length === 3 && num(x[0]) && typeof x[1] === "string" && num(x[2])).slice(-MAX_KEYS) : [],
-      alerted: keyMap(s.alerted)
+      alerted: keyMap(s.alerted),
+      oUntil: num(s.oUntil) ? s.oUntil : 0, oAt: num(s.oAt) ? s.oAt : 0, oSrc: originSrc(s.oSrc),
+      om: originMarks(s.om, now)
     };
   }
+  out.oc = cleanOriginCache(state && state.oc, now);
   return out;
+}
+
+// ---- origin taint state ----
+// oSrc: the source of the session's origin taint, { source, app, hostHash } (an app name and a keyed hash only).
+// om:   keyed hashes of paths that inherit an outside origin in this session (an outside archive's extraction
+//       directory, the targets of a mark removal) -> { t, ...src }. 64 per session, dropped with the window.
+// oc:   cli/file-origin.mjs's cache, shared by every session: keyed hash of (dev, ino, mtime, size) -> { m, t },
+//       m = { s, a, h } or null. 512 entries, 24 h.
+const shortStr = (v, n) => (typeof v === "string" && v.length <= n ? v : null);
+function originSrc(v) {
+  if (!obj(v) || !shortStr(v.source, 32)) return null;
+  return { source: v.source, app: shortStr(v.app, 40), hostHash: shortStr(v.hostHash, 80) };
+}
+const MAX_MARKS = 64, MAX_CACHE = 512;
+function originMarks(m, now) {
+  const o = {};
+  if (!obj(m)) return o;
+  for (const [k, v] of Object.entries(m)) { const src = obj(v) && num(v.t) && now - v.t <= TTL ? originSrc(v) : null; if (src) o[k] = { t: v.t, ...src }; }
+  const ks = Object.keys(o);
+  if (ks.length > MAX_MARKS) for (const k of ks.sort((x, y) => o[x].t - o[y].t).slice(0, ks.length - MAX_MARKS)) delete o[k];
+  return o;
+}
+export function cleanOriginCache(c, now) {
+  const o = {};
+  if (!obj(c)) return o;
+  for (const [k, v] of Object.entries(c)) {
+    if (!obj(v) || !num(v.t) || now - v.t > TTL || k.length > 64) continue;
+    if (v.m === null) { o[k] = { m: null, t: v.t }; continue; }
+    if (obj(v.m) && shortStr(v.m.s, 32)) o[k] = { m: { s: v.m.s, a: shortStr(v.m.a, 40), h: shortStr(v.m.h, 80) }, t: v.t };
+  }
+  const ks = Object.keys(o);
+  if (ks.length > MAX_CACHE) for (const k of ks.sort((x, y) => o[x].t - o[y].t).slice(0, ks.length - MAX_CACHE)) delete o[k];
+  return o;
+}
+// The session's origin marks (path-key -> src), for the caller's lookup before assessSessionRisk runs.
+export function sessionOriginMarks(state, session, now) {
+  const s = obj(state) && obj(state.sessions) ? state.sessions[session] : null;
+  if (!obj(s)) return {};
+  const marks = originMarks(s.om, now);
+  // A mark lives as long as the taint window it came with.
+  return num(s.oUntil) && s.oUntil > now ? marks : {};
 }
 
 const REASONS = {
@@ -208,7 +270,7 @@ export function assessSessionRisk(state, session, ev, now, cfg = sessionRiskConf
   const e = ev && typeof ev === "object" ? ev : {};
   const pre = !e.post;
   let s = st.sessions[session];
-  if (!s) s = st.sessions[session] = { last: now, n: 0, score: 0, sf: 0, sb: 0, at: now, taintUntil: 0, taintAt: 0, taintIds: [], steps: [], reads: {}, hosts: {}, xfer: [], alerted: {} };
+  if (!s) s = st.sessions[session] = { last: now, n: 0, score: 0, sf: 0, sb: 0, at: now, taintUntil: 0, taintAt: 0, taintIds: [], steps: [], reads: {}, hosts: {}, xfer: [], alerted: {}, oUntil: 0, oAt: 0, oSrc: null, om: {} };
   const win = cfg.windowMin * 60000;
   const hostKeys = Array.isArray(e.hostKeys) ? e.hostKeys.filter((h) => typeof h === "string") : [];
   s.last = now;
@@ -268,8 +330,47 @@ export function assessSessionRisk(state, session, ev, now, cfg = sessionRiskConf
   const flags = (e.cred ? F_CRED : 0) | (e.encode || e.archive || (e.cred && e.writes) ? F_STAGE : 0) | (e.archive ? F_ARCH : 0) | (e.out ? F_OUT : 0);
   if (pre && flags) { s.steps.push([n, now, flags]); s.steps = s.steps.slice(-MAX_STEPS); }
 
+  // Origin taint (data/origin-taint.js). Set before the gate below, so a command that reads an outside file and
+  // uploads in the same call is gated. A mark removal taints too, and is alerted every time.
+  let origin = null;
+  const oHits = [];
+  if (cfg.originTaint !== "off" || Object.values(cfg.originGates || {}).some((v) => v !== "off")) {
+    const inWin = () => s.oUntil > now && s.oAt <= now;
+    const src = originSrc(e.origin);
+    if (src) { if (!inWin() || !s.oSrc) s.oSrc = src; s.oUntil = now + win; s.oAt = now; }
+    if (e.originStrip) {
+      if (!inWin() || !s.oSrc) s.oSrc = { source: "mark-removed", app: null, hostHash: null };
+      s.oUntil = now + win; s.oAt = now;
+      oHits.push({ kind: "origin-strip", sig: { action: "mark-removed" } });
+    }
+    for (const m of Array.isArray(e.originMarks) ? e.originMarks : []) {
+      const ms = m && typeof m.key === "string" ? originSrc(m.src) : null;
+      if (ms) s.om[m.key] = { t: now, ...ms };
+    }
+    s.om = originMarks(s.om, now);
+    const gates = [...new Set([...(e.out ? ["outbound"] : []), ...(Array.isArray(e.originGates) ? e.originGates.filter((g) => ORIGIN_GATE_CLASSES.includes(g)) : [])])];
+    if (pre && gates.length && inWin() && s.oSrc) {
+      const lv = gates.map((g) => [g, (cfg.originGates && cfg.originGates[g]) || cfg.originTaint]).filter(([, l]) => l !== "off");
+      const level = strictestLevel(lv.map(([, l]) => l));
+      if (level !== "off") {
+        const action = lv.find(([, l]) => l === level)[0];
+        origin = { level, action, actions: lv.map(([g]) => g), reason: originReason(s.oSrc), source: s.oSrc.source, app: s.oSrc.app, hostHash: s.oSrc.hostHash };
+        for (const [g, l] of lv) {
+          const k = `origin:${g}`;
+          // Once per action class per taint window: again when a later read opened a new window.
+          if (num(s.alerted[k]) && s.alerted[k] >= s.oAt) continue;
+          s.alerted[k] = now;
+          oHits.push({ kind: "origin", sig: { action: g, ...(g === "outbound" && e.outKind ? { outKind: e.outKind } : {}), level: l, source: s.oSrc.source, app: s.oSrc.app, hostHash: s.oSrc.hostHash, minutesSinceTaint: Math.round((now - s.oAt) / 60000) } });
+        }
+      }
+    }
+  }
+
   const sessionRisk = { score: s.score, threshold: cfg.threshold, mode: cfg.mode };
   const alerts = [];
+  for (const h of oHits) alerts.push({ kind: h.kind, alert: BODY[h.kind](h, sessionRisk) });
+  // mode "off" turns the content-based signals off; origin taint keeps its own switch (originTaint).
+  if (cfg.mode === "off") hits.length = 0;
   for (const h of hits) {
     const akey = h.kind === "sequence" ? `seq:${h.rule}` : h.kind;
     if (akey in s.alerted) continue;
@@ -291,12 +392,16 @@ export function assessSessionRisk(state, session, ev, now, cfg = sessionRiskConf
     const others = keys.filter((k) => k !== session).sort((x, y) => st.sessions[x].last - st.sessions[y].last);
     for (const k of others.slice(0, keys.length - cfg.maxSessions)) delete st.sessions[k];
   }
-  return { state: st, alerts, escalate, score: s.score, dirty: true };
+  return { state: st, alerts, escalate, origin, score: s.score, dirty: true };
 }
 
 const BODY = {
   taint: (h, sr) => ({ threatId: 59, category: "Agent behavior: outbound action after untrusted content", riskLevel: "High", stage: "behavior", contentHash: "srisk:taint", signature: h.sig, sessionRisk: sr }),
   sequence: (h, sr) => ({ threatId: 59, category: "Agent behavior: exfiltration sequence", riskLevel: "High", stage: "behavior", contentHash: `srisk:seq:${h.rule}`, signature: h.sig, sessionRisk: sr }),
   "slow-exfil": (h, sr) => ({ threatId: 59, category: "Agent behavior: slow exfiltration", riskLevel: "High", stage: "behavior", contentHash: "srisk:slow", signature: h.sig, sessionRisk: sr }),
-  score: (h, sr) => ({ threatId: 0, category: "Agent behavior: session risk threshold", riskLevel: "Medium", stage: "behavior", contentHash: "srisk:score", signature: h.sig, sessionRisk: sr })
+  score: (h, sr) => ({ threatId: 0, category: "Agent behavior: session risk threshold", riskLevel: "Medium", stage: "behavior", contentHash: "srisk:score", signature: h.sig, sessionRisk: sr }),
+  // #3 indirect prompt injection: the risk is an instruction carried by the outside file steering the action. The
+  // alert names the source kind, the app, a keyed host hash and the action class; never a path or a host.
+  origin: (h, sr) => ({ threatId: 3, category: "Origin taint: action after reading an internet-origin file", riskLevel: h.sig.level === "block" ? "Blocked" : "High", stage: "behavior", contentHash: `origin:${h.sig.action}`, signature: h.sig, sessionRisk: sr }),
+  "origin-strip": (h, sr) => ({ threatId: 3, category: "Origin taint: origin mark removed", riskLevel: "High", stage: "behavior", contentHash: "origin:mark-removed", signature: h.sig, sessionRisk: sr })
 };

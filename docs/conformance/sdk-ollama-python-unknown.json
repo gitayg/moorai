@@ -1,0 +1,47 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.495Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "sdk",
+      "id": "sdk-ollama-python",
+      "label": "Ollama client for Python",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "sdk-not-installed"
+    }
+  ],
+  "reasons": {
+    "sdk-not-installed": "the official SDK package is not installed; the tier installs nothing"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "8b5b7a5a31ccf2927fc063a2f7e178574691a18ae0f31b0fbd97aad44af1dd86",
+    "sig": "A9sQi/6dVcvxvslOqcJa87Is1N6+iOGBFjXLLYojScMlJDTUkwf8vksG2p8GvjqlkqugX87p1NGDAX2S4B3MCw==",
+    "ephemeral": false
+  }
+}

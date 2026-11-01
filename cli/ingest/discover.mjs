@@ -13,17 +13,28 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 
-export const AGENTS = ["claude-code", "codex"];
+// Gemini CLI: ~/.gemini/tmp/<project_hash>/chats/session-<ts>-<id8>.jsonl (legacy: .json), and a sub-agent's
+//   <sessionId>.jsonl in chats/<parent session>/ (packages/core/src/services/chatRecordingService.ts:
+//   path.join(getProjectTempDir(), "chats"), SESSION_FILE_PREFIX "session-"). Only files under a `chats`
+//   folder count: ~/.gemini/tmp also holds logs.json, checkpoints and shell history.
+export const AGENTS = ["claude-code", "codex", "gemini"];
 
 export function defaultRoots(env = process.env, home = os.homedir()) {
   return {
     "claude-code": [join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "projects")],
-    codex: [join(env.CODEX_HOME || join(home, ".codex"), "sessions"), join(env.CODEX_HOME || join(home, ".codex"), "archived_sessions")]
+    codex: [join(env.CODEX_HOME || join(home, ".codex"), "sessions"), join(env.CODEX_HOME || join(home, ".codex"), "archived_sessions")],
+    gemini: [join(home, ".gemini", "tmp")]
   };
 }
 
-export function isTranscriptName(agent, name) {
+export function isTranscriptName(agent, name, path = "") {
   if (agent === "codex") return /^rollout-.*\.jsonl(\.zst)?$/.test(name);
+  if (agent === "gemini") {
+    const segs = String(path).split(/[\\/]/);
+    const parent = segs[segs.length - 2], grand = segs[segs.length - 3];
+    if (parent === "chats") return /^session-.*\.jsonl?$/.test(name);
+    return grand === "chats" && name.endsWith(".jsonl");
+  }
   return name.endsWith(".jsonl");
 }
 
@@ -40,7 +51,7 @@ export function walk(agent, roots, { maxDepth = 6, maxEntries = 200000, deadline
       if (++seen > maxEntries || clock() > deadline) { walkTruncated = true; return; }
       const p = join(dir, e.name);
       if (e.isDirectory()) { if (depth < maxDepth) visit(p, depth + 1); continue; }
-      if (!e.isFile() || !isTranscriptName(agent, e.name)) continue;
+      if (!e.isFile() || !isTranscriptName(agent, e.name, p)) continue;
       try { const st = statSync(p); files.push({ path: p, agent, mtimeMs: st.mtimeMs, size: st.size }); } catch { /* vanished */ }
     }
   };

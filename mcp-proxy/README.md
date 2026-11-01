@@ -29,16 +29,42 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
 
 ### agent → server: the tool CALL
 
+- **Egress rules first** (after quarantine, tool drift and reputation): every destination the call's
+  arguments name is judged by the hook's own egress rules for `mcp__<server>__<tool>`
+  (`evaluateEgress` in [`../cli/workload-profile.mjs`](../cli/workload-profile.mjs), the egress half of
+  `evaluateProfile`), from the verified policy and the root-owned machine-wide config. A block refuses
+  the call (coached when unenrolled) with an `EGRESS_RULE` alert carrying the binary, host, port and
+  method, never a path, a query or an argument. A `cidr` rule matches an IP literal in the arguments; a
+  host name is not resolved here.
 - Every JSON-RPC message with `method === "tools/call"` is gated through `mcpGateway()`
   (from `cli/hook-core.mjs`), in this order, steps 1–3 short-circuiting on the first deny:
   1. **server allow-list** (#3) — is this MCP server allowed at all?
   2. **per-tool argument rules** (#18) — deny/allow regexes for this tool's arguments.
-  3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments.
+  3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments, then
+     over the argument values with their line breaks and over base64 / `data:` content an argument carries
+     (decoded in memory the way a lenient decoder reads it; a decoded Office or PDF file gets
+     `labelPolicy`'s send verdict; a value not decoded whole (over 1 MiB, or past 4 MiB per call), an image
+     too, or a label not read follows `failMode.mcpGateway`: closed refuses the call, open forwards it with
+     `MCP: outbound arguments not fully evaluated`, Medium, once per tool in this process; past the caps a
+     ZIP / PDF / OLE file's label is still read in place, and an unread label is refused when a
+     `labelPolicy` rule blocks sending), plus the
+     over-sharing signal (`mcpOversharing`: size, encoded blob, a pasted file or conversation; reported by
+     default). A write-shaped call is exempt from that signal only when the wrapped server is the reference
+     filesystem server by its launch command, or its label is in `mcpOversharing.localWriteServers`
+     ([`../cli/mcp-local-write.mjs`](../cli/mcp-local-write.mjs)); the tool name alone never exempts.
+     See [`../cli/mcp-outbound.mjs`](../cli/mcp-outbound.mjs).
+  3b. **local secret egress** (#65) — a value from the project's `.env*`, `~/.aws/credentials`,
+     `~/.npmrc`, `~/.netrc` or `.git-credentials`, or one this server's results carried earlier in the
+     process, found in the arguments verbatim or encoded. Refused by default (#65 resolves to block); an
+     unverified match is denied unless the policy sets `headlessAsk: "allow-with-report"`. Only hash
+     prefixes, encodings and source kinds leave ([`../cli/mcp-secret-egress.mjs`](../cli/mcp-secret-egress.mjs)).
   4. **files the arguments name** — unless step 1 or 2 refused the call, every local file an argument
      names (absolute, `~`, `file://`, or relative to the proxy's cwd and then to the client's MCP roots,
      kept from its `roots/list` answer, at most 16) gets what the Claude Code hook gives a file a `Bash`
      command reads: its content at the `file` stage, its metadata (#72) and its location against the
-     credential list (#55). Same helper as the hook's `mcp__*` branch
+     credential list (#55), and, under a signed `labelPolicy`, its Microsoft Purview sensitivity label
+     (`../cli/sensitivity-labels.mjs`; a label that cannot be read follows `failMode.mcpGateway`). Same
+     helper as the hook's `mcp__*` branch
      ([`../cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)). A relative path is left alone when the call
      names a remote `owner` / `repo` / `repository` / `project_id` / `bucket` and the tool's name does
      not send. Only regular files are read (a symlink to a regular file is judged by its target; never
@@ -49,6 +75,10 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
   5. **vector-store writes** — when the tool writes documents into a vector store or memory (below),
      its arguments are scanned at the `index` stage too. Report-first; refused only under
      `policy.indexScanAction: "block"`.
+  6. **class default** (policy `mcpToolClassDefaults`; [`../cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs)),
+     merged by rank after the argument, file and vector-store checks and before an ask is settled. The
+     tool's `annotations` from this server's listings count only when they make it stricter. Alert:
+     `MCP: tool blocked by class default` / `MCP: tool held by class default`, `reasonCode: "MCP_TOOL_CLASS"`.
 - **Block** → the call is **not** forwarded; the proxy returns a JSON-RPC *result* to the host that
   is an MCP tool error (`isError: true`, using the request's `id`), so the model sees a clean refusal
   instead of a hang. The real server never receives the call.
@@ -136,6 +166,17 @@ them can block.
   zero alerts. A result that resolves to `deny` is replaced by an MCP tool error (`isError: true`, same
   JSON-RPC `id`); anything else is forwarded unchanged. Default is still report-first — the built-in
   default resolves #39 to `notify` and forwards — so only an explicit `deny` blocks.
+- **Sampling and elicitation requests** the server sends the client — `sampling/createMessage` and
+  `elicitation/create`, as a JSON-RPC request or inside a result's `inputRequests` (MCP 2026-07-28) — are
+  scanned before the client sees them ([`sampling-scan.mjs`](sampling-scan.mjs)): system prompt, messages,
+  request-scoped tools, the elicitation message, URL and schema, at stage `file`, plus an `includeContext`
+  of `"allServers"` / `"thisServer"` reported as a context request. Report-first; refused when a finding
+  resolves to block, or under `policy.samplingScanAction: "block"` (an instruction threat) or
+  `policy.samplingContextAction: "block"` (any `includeContext`). A refused request is answered to the
+  server with JSON-RPC error `-1` and replaced, for the client, by a `notifications/message` from logger
+  `moorai`; a refused `inputRequests` result becomes an `isError` tool result. Every `inputRequests` entry
+  is read. Text past the tool-result bounds (64 KB, 512 objects, depth 8) leaves the request not judged:
+  `failMode.mcpGateway` closed refuses it, open forwards it and reports it. Alerts at stage `sampling`.
 - **Everything else** — `initialize`, notifications, and all other responses — passes through
   **verbatim and transparently**.
 
@@ -202,6 +243,36 @@ A later report that differs shows "tools changed since approval — awaiting re-
 accepts the new fingerprints. So the order of operations for an org is: set `mcpToolDrift` to `block`,
 let devices report, then approve (or re-approve) the server to pin its tools.
 
+**A stale client is judged against a fresh listing.** Drift is judged from `tools/list` responses, and a
+server can change a tool after the client's last listing; a client that does not list again would then
+call the changed tool with nothing compared. So in block mode, when the last whole listing the guard
+judged for the server is older than the signed policy's `mcpToolRecheckSeconds` (default 300; 0 =
+before every call; an integer of at least 0, anything else is the default, more than 86,400 is taken as
+86,400), a `tools/call` first makes the guard send its **own** `tools/list` to the server, walk every
+page, and judge it like any block-mode listing ([`tool-recheck.mjs`](tool-recheck.mjs)). Then the call
+is decided: an unchanged tool is forwarded, one that drifted or that the server no longer lists is
+refused. The server's `notifications/tools/list_changed` marks the listing stale at once (the
+notification is still forwarded). The guard's request uses a string id with a per-process random nonce
+(`moorai-recheck-<24 hex>-<n>`), which no client id can collide with; its answer is consumed and never
+forwarded, including one that arrives after the wait ended. The request and the client's are each one
+whole line on the server's stdin, so the client's own requests and answers are untouched. One re-list is
+in flight per server and concurrent calls share it; the whole re-list (every page) has a 2 s budget. A
+re-list that fails (an error answer, an unreadable or over-1 MB answer, a looping cursor, the budget)
+follows the admin's fail mode for the MCP surface (`failMode.mcpGateway`, [`../cli/fail-mode.mjs`](../cli/fail-mode.mjs)):
+closed refuses the call (`Fail-closed: MCP call not evaluated`, `failWhy: "recheck"`), open forwards it
+to the rest of the gate with an alert (`MCP: tool list re-check failed`, Medium, `decision: "allow"`,
+`failMode: "open"`, `failWhy: "timeout" | "error"`). Alerts about drift found by a re-list, and a call
+refused on one, carry `driftCheck: "recheck"`; a re-list's fingerprints are not posted to the console,
+whose view of a server stays the listings its clients received. Alert mode never re-lists: no extra
+request, byte-identical traffic.
+
+The re-list shows what the server tells MoorAI, which a server can tell apart from the client's request.
+So it only tightens: it can quarantine a tool or drop one the server no longer lists, but it never passes a
+tool, never releases a quarantine a client listing set, and moves no baseline. A server that shows MoorAI
+a clean list and the client a drifted one is still caught on the client's listing as it passes. And while
+the client may hold a listing MoorAI could not judge (the rows below that clear every verdict), every
+call is refused until a client listing is judged again, so no re-list is sent then.
+
 **Re-approval releases the tool without a re-list.** A quarantined tool is re-judged on every call
 against the policy in force at that moment (refreshed every 60 s), so the first call after the new policy
 arrives goes through. A released tool is recorded in the local baseline.
@@ -231,6 +302,8 @@ so deleting it removes this second layer and leaves the first.
 | The policy switches from `alert` to `block` during a session | tools listed under `alert` are judged on their first call, against the approved baseline if there is one; a tool that passes keeps working without a re-list |
 | The judgement throws | the listing is forwarded unfiltered; every verdict for that server is cleared, so calls are refused (closed) until a listing is judged again |
 | The fingerprint post to the console fails | nothing changes on the device; the console has nothing new to pin until the next report |
+| The server changed a tool after the client's last listing, and the client calls it without listing again | past `mcpToolRecheckSeconds` (or after `notifications/tools/list_changed`) the guard re-lists first: the changed or vanished tool is refused (closed) |
+| The guard's own re-list fails or runs out of its 2 s budget | `failMode.mcpGateway`: closed refuses the call, open forwards it with an alert. The client is never held past the budget |
 | A paginated listing | each page is judged; a removal is not reported and fingerprints are not posted, so a paginated server cannot be pinned and stays on the local baseline. On a server's first sighting every page of that first listing is a first sighting (a page-2 tool is not "added after" page 1); a page over 1 MB clears the server's verdicts as above |
 
 ### first sight: the server's REPUTATION
@@ -242,7 +315,7 @@ Signals, all offline unless the policy opts in:
 
 - the package name against the known-malicious / popular-library list and the popular MCP server list
   (`data/popular-mcp-servers.js`, from the SkillTriage catalogue seed) — `pkg-known-malicious`,
-  `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` — `unpinned-version`;
+  `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` (no exact version: none, `latest`, `^1.4`, `~1.4`) — `unpinned-version`;
 - the copy npx already installed under `~/.npm/_npx`, read with the package heuristics and scoped engine
   scan SkillTriage runs — `pkg-install-script-remote`, `pkg-remote-code`, …;
 - the server's own `tools/list` — `tool-poisoning` (#60, including `mcp-tool-cred-path`),
@@ -252,7 +325,14 @@ Signals, all offline unless the policy opts in:
   and, in parallel, the **repository link** below;
 - opt-in `mcpReputation.feed: true` — SkillTriage's published verdicts, downloaded whole with a bare GET
   and matched on the device (`catalogue-do-not-install`, `catalogue-review`, …), so the request names no
-  server.
+  server;
+- the signed MoorAI MCP catalogue — top-level policy key `mcpCatalogue: { url, publicKeys }`: fetched whole
+  (https, at most daily) and used only after its ed25519 signature verifies against a key from the policy,
+  `MOORAI_CATALOGUE_PUBKEY` or `/etc/moorai/catalogue.pub`; the same `catalogue-*` codes (npm and PyPI
+  servers), kept on the re-score after `tools/list`, and a `no-findings` verdict is evidence only. The cache
+  is refetched when its fetch time is in the future, a catalogue past its signed (mandatory) `expiresAt` is
+  refused, cached or fetched, and a catalogue below the highest `seq` this device accepted from that key is refused. Format, generator and trust rules: `docs/CAPABILITY_SPEC.md`,
+  "Signed MCP server and skill catalogue".
 
 Both opt-in requests honour the registry mirrors (`MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`,
 `MOORAI_MCP_REGISTRY`, `MOORAI_GITHUB_RAW_URL`, `MOORAI_GITHUB_CODELOAD_URL`, https only) and
@@ -296,6 +376,17 @@ unreachable 8, mismatch 2 (one of them a false positive after a rename, `blender
 **Limits.** Sigstore signatures on provenance are read, not re-verified. The manifest is read at `HEAD`,
 so a package renamed after publishing reads as a mismatch. Repositories on bitbucket.org and codeberg.org
 are not verified.
+
+### the server's PACKAGE: pinned, approved, not known-bad (`mcpPackagePolicy`)
+
+The launch command the guard wraps also decides whether calls are held by the signed policy's
+`mcpPackagePolicy` (`../cli/mcp-package-policy.mjs`): an npm or PyPI launch with no exact version, a version
+other than the policy's pin, a reputation reason that fails a critical `moorai-mcp-check` check (including the
+registry codes when `mcpReputation.lookup` is on), or a release on the known-bad list (`knownBadPackages`,
+default block). `report` (the default) posts one content-free alert with the reputation's first-sight alert;
+`block` answers each `tools/call` with an `isError` result the server never receives; `ask` forwards and
+records, because a desktop host has no prompt. A version change the reputation cache noticed is reported, not
+held. Local, docker and remote servers are not judged here. The same policy runs in the Claude Code hook.
 
 ### Trace context in `params._meta`
 
@@ -369,6 +460,95 @@ Each refusal raises one content-free alert with `reasonCode: "FAIL_CLOSED"`. The
 line that is not JSON, a line over 1 MB (streamed through unparsed), and tools/list observation. An
 unenrolled device (coach mode) never refuses. The MCP package check stays fail-closed whatever the
 setting: an unverified package is REVIEW.
+
+## Network sandbox for the server process (`mcpServerSandbox`, macOS)
+
+**Experimental.** It restricts the server process's own network connections and DNS, not its files or
+processes: a sandboxed server can still write a LaunchAgent or cron job, edit MCP-client or MoorAI config, or
+run `launchctl`, and work scheduled that way runs later outside the sandbox. Treat it as one layer, not
+containment.
+
+Everything above judges JSON-RPC. What the server's own code does with the network (a dependency that
+phones home, a tool that opens a socket its description never mentions) never crosses the wire the guard
+reads. `mcpServerSandbox: "network"` starts the real server under a kernel network sandbox built from the
+same `egressRules` / `egressDefault` MoorAI's egress check uses ([`sandbox-spawn.mjs`](sandbox-spawn.mjs),
+profile from [`../cli/sandbox-policy.mjs`](../cli/sandbox-policy.mjs)).
+
+| `mcpServerSandbox` | What the guard starts |
+|---|---|
+| `"off"` (default) | the real command, exactly as before |
+| `"network"` | macOS: `/usr/bin/sandbox-exec -p <profile> <cmd> <args...>`. Same command, arguments, environment and stdio pipes; the profile is `(allow default)` plus the generated network section |
+
+**Who decides.** The root-owned admin binding (`/etc/moorai/config.json`, top-level key), then the verified
+signed policy, then `"off"` — the precedence of `failMode`. The guard reads both before it starts the
+server, from local copies only (the cached verified policy, never a fetch, so start-up is not held on the
+console). A value other than exact lowercase `"off"` / `"network"` is ignored with a warning naming the
+source and key. Trust model as for `failMode`: on a pinned device a user-writable file cannot change it; on
+an unpinned device the verified policy is the user-scope copy, so the user can.
+
+**Which rules.** The policy's `egressRules`, then the admin binding's (first match decides); the policy's
+`egressDefault`, else the admin binding's — the order MoorAI's own egress check reads them in. Workload
+profiles' rules are not used.
+
+**What "network" restricts — read this before turning it on.** Seatbelt can name only loopback
+(`sandbox-exec` rejects `(remote ip "1.2.3.4:443")` and hostnames: "host must be * or localhost"). So:
+
+- **With `egressDefault: "block"`**, every outbound connection except loopback (and `AF_UNIX`) is refused by
+  the kernel (`EPERM`). That includes hosts your `egressRules` allow: an allow rule for an internet host
+  cannot be written into the profile, so it is reported `omitted` and stays denied. A server that needs an
+  API, and a server launched as `npx -y <pkg>` / `uvx <pkg>` that fetches its own code at start, fail.
+  Use it for servers that work on local data only, or reach their upstream through a loopback proxy.
+  The profile also denies, in this mode only:
+  - name resolution: the `mDNSResponder` socket and mach services (`com.apple.mDNSResponder`,
+    `com.apple.mDNSResponderHelper`), so a public name does not resolve and DNS cannot carry data out;
+    `localhost` still resolves;
+  - the `nsurlsessiond`, `launchservicesd` and `lsd` mach services, and sending AppleEvents;
+  - exec of `/usr/bin/open` and `/usr/bin/osascript` (`EPERM`).
+- **With any other `egressDefault`** (or none), no non-loopback host and no DNS is restricted; only loopback
+  port rules apply. The guard says so on stderr.
+
+**What it is not.** The sandbox restricts the server process's own network connections and DNS. It is not
+full containment: file and process access are not restricted, so the server can read and write what the
+user can and run other programs. Handing work to another app is closed only where measured: AppleEvents and
+exec of `/usr/bin/open` / `/usr/bin/osascript`. Denying the LaunchServices mach services alone did not stop
+`open` (measured: it still exited 0), and other routes to LaunchServices (a program that calls it directly)
+were not measured.
+
+Every rule the profile cannot express (`unexpressed` from `sandboxPolicy`) is written to stderr, one line
+each with its source (`policy` / `admin`) and index, and sent as one content-free alert,
+`Containment: MCP server sandbox rules not expressed` (Medium; `unexpressed: [{ index, source, id?,
+action, fields, effect, reason }]`, `unexpressedCount`, `blocksNonLoopback`). Never a host value. Nothing
+unexpressed is widened.
+
+**When it cannot run** (Linux, Windows, `/usr/bin/sandbox-exec` missing, or a profile that could not be
+built), the guard never starts the server silently unsandboxed. The `mcpGateway` fail mode decides, as for
+everything else the guard cannot do:
+
+| `failMode.mcpGateway` | What happens | Alert (`reasonCode: "CONTAINMENT_UNAVAILABLE"`, category `Containment: MCP server sandbox unavailable`) |
+|---|---|---|
+| `"open"` (default) | the server starts unsandboxed; stderr: `... runs UNSANDBOXED: ...` | High, `decision: "notify"`, `failMode: "open"` |
+| `"closed"` | the server is **not started**; stderr: `... was not started: ...`; the guard exits 1, as when a spawn fails, and the MCP client shows the server as failed | Blocked, `decision: "deny"`, `enforcement: "STRENGTHENED"` |
+
+Both carry `sandboxWhy` (`platform`, `no-sandbox-exec`, `profile-error`), `sandboxMode`, `sandboxSource`,
+`failModeSource` and `mcpServer`. Coach mode (unenrolled, unmanaged) never refuses. One alert per launch:
+each launch of the server is one guard process.
+
+**Status.** The coverage heartbeat carries `mcpServerSandbox: { mode, state }`, state `"on"` (requested and
+`sandbox-exec` present: the network profile can be applied, which is not full containment), `"unavailable"`
+(requested, no backend) or `"off"`, from static prerequisites only.
+
+**Measured** (macOS 27.0, `test/mcp-server-sandbox-guard.test.mjs`): through the real guard, a fixture
+server's connect to TEST-NET `192.0.2.1:443` times out with the sandbox off and fails with `EPERM` under
+`"network"` + `egressDefault: "block"`, while a loopback connect still succeeds. In the same mode
+`dns.lookup("example.com")` is `ENOTFOUND`, `localhost` resolves, and exec of `/usr/bin/open` and
+`/usr/bin/osascript` is `EPERM`. Measured by hand with `sandbox-exec`: python `getaddrinfo` of a public name
+fails, and node, python, `npx --version` and their child processes start.
+
+**Not covered.** Linux and Windows (no backend). Servers a host launches without the guard (not wrapped by
+`install.mjs`). Remote (HTTP) servers: their process is not on this machine ([`../mcp-gateway/`](../mcp-gateway/README.md)
+judges their traffic only). Files and processes are not restricted, and app hand-off is closed only for
+AppleEvents and the two binaries above. A server already running when the policy changes keeps the profile
+it started with until it is restarted.
 
 ## Install
 
@@ -518,9 +698,13 @@ proxy sees nothing.
 | `trace-meta.mjs`           | Sets a forwarded `tools/call`'s `params._meta.traceparent` / `tracestate` by editing the line in place. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
-| `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report. Shared with the HTTP gateway. |
+| `sampling-scan.mjs`        | Server → client `sampling/createMessage` / `elicitation/create` requests (both MCP shapes): the scan text, the `includeContext` signal, the decision, the alerts and the refusal. Shared with the HTTP gateway. |
+| `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report, per-server listing freshness. Shared with the HTTP gateway. |
+| `tool-recheck.mjs`         | `mcpToolRecheckSeconds`: the re-list before a block-mode call when the last judged listing is stale (every page, 2 s budget, one in flight per server). Shared with the HTTP gateway. |
+| `sandbox-spawn.mjs`        | `mcpServerSandbox`: plans the server's spawn (off / under `sandbox-exec` / unavailable / refused), the stderr notes, the alerts and the heartbeat field. |
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |
+| `test/fake-sampling-mcp-server.mjs` | Fake server that sends the client a sampling or elicitation request (either shape), for `test/mcp-sampling-scan.test.mjs`. |
 | `test/live/tee-server.mjs` | Tap in front of the fake server that records what the guard forwarded, for the real-client runs. |
 | `measure-mcp-coverage.mjs` | Drives malicious/benign actions through the proxy to produce the coverage table above. |

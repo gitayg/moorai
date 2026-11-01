@@ -1,0 +1,20 @@
+#!/bin/sh
+# moorai postinst: create the administrator directory and say what to enable. It touches no user's home
+# and enables no unit by itself.
+set -e
+case "$1" in
+  configure)
+    install -d -m 0755 /etc/moorai
+    if ! sh /usr/lib/moorai/linux/moorai-node --check; then
+      echo "MoorAI: installed, but the hooks need Node.js 18 or newer on PATH (or /usr/bin/node)." >&2
+    fi
+    cat <<'EOF'
+MoorAI installed in /usr/lib/moorai.
+  Register the hooks for one user (run as that user):   moorai-install-hooks
+  ... or at every login for every user:                 sudo systemctl --global enable moorai-hooks.service
+  Engine sidecar for other agent loops (per user):      systemctl --user enable --now moorai-serve.service
+Before removing the package, run `moorai-hook uninstall` as each user to take the hooks out of settings.json.
+EOF
+    ;;
+esac
+exit 0

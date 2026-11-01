@@ -124,13 +124,20 @@ test("an org policy that names a data tier is still honoured on inbound content"
   assert.equal(d.decision, "deny");
 });
 
-test("#39 in a result stays an alert-level, report-only finding (CRED_RESULT_DECISION)", () => {
-  assert.equal(CRED_RESULT_DECISION, "report");
-  const d = decideInbound(engine, BUILTIN, "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", { surface: "door", stage: "file" });
+test("#39 in a result is an alert-level finding that never asks or blocks by default; a rewriting caller is told to mask it (CRED_RESULT_DECISION)", () => {
+  assert.equal(CRED_RESULT_DECISION, "mask");
+  const text = "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const d = decideInbound(engine, BUILTIN, text, { surface: "door", stage: "file" });
   const cred = d.findings.find((f) => f.threatId === 39);
   assert.ok(cred, "#39 must fire");
   assert.notEqual(cred.riskLevel, INFO_LEVEL);
   assert.equal(d.decision, "allow");
+  assert.deepEqual(d.maskIds, [], "a caller that cannot rewrite gets notify");
+  const m = decideInbound(engine, BUILTIN, text, { surface: "door", stage: "file", mask: true });
+  assert.deepEqual(m.maskIds, [39]);
+  assert.equal(m.decision, "allow");
+  for (const p of [{ threatPolicy: { 39: "notify" } }, { tierPolicy: { secret: "notify" } }]) assert.deepEqual(decideInbound(engine, p, text, { surface: "door", stage: "file", mask: true }).maskIds, [], `an org action opts out: ${JSON.stringify(p)}`);
+  assert.equal(decideInbound(engine, { threatPolicy: { 39: "block" } }, text, { surface: "door", stage: "file", mask: true }).decision, "deny", "an org block still blocks");
 });
 
 test("applyInbound recomputes the decision from what survives", () => {

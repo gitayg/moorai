@@ -1,0 +1,15 @@
+{
+  "tagActions": { "exec": "block", "network": "ask", "write": "alert", "read-private": "block" },
+  "mcpAllow": ["github", "jira", "bad name"],
+  "entitlementMode": "block",
+  "entitlements": { "mcp": ["github", "bad name", "docs"] },
+  "egressRules": [
+    { "id": "no-evil", "host": "evil.example.com", "action": "block" },
+    { "host": "*.example.com", "port": 443, "action": "allow" },
+    { "host": "api.partner.test", "path": "/v1*", "action": "allow" },
+    { "host": "paste.test", "method": "POST", "action": "block" },
+    { "host": "203.0.113.9", "port": [22, 2222], "action": "block" },
+    { "host": "registry.npmjs.org", "binary": "npm", "action": "allow" }
+  ],
+  "egressDefault": "block"
+}

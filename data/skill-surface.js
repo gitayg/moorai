@@ -29,6 +29,14 @@ const SURFACE = [
   [/(^|[/\\])managed-settings\.json$/i, "claude-managed-settings", false],
   [/(^|[/\\])\.claude[/\\]settings(\.local)?\.json$/i, "claude-settings", true],
   [/(^|[/\\])\.claude[/\\]hooks([/\\].+)?$/i, "claude-hook", true],
+  // Factory Droid hooks run shell commands at lifecycle events (docs.factory.com reference/hooks-reference,
+  //   droid-cli/settings, enterprise/hierarchical-settings-and-org-control): ~/.factory/hooks.json and
+  //   .factory/hooks.json, the `hooks` key of settings.json / settings.local.json beside them, the legacy
+  //   .factory/hooks/hooks.json, and the org-managed settings.json (/etc/factory, /Library/Application
+  //   Support/Factory, C:\Program Files\Factory). Before the generic plugin-hooks entry: first match wins.
+  [/(^|[/\\])\.factory[/\\](hooks|settings(\.local)?)\.json$/i, "droid-settings", false],
+  [/(^|[/\\])\.factory[/\\]hooks[/\\]hooks\.json$/i, "droid-settings", false],
+  [/(^|[/\\])(etc[/\\]factory|Application Support[/\\]Factory|Program Files[/\\]Factory)[/\\]settings\.json$/i, "droid-settings", false],
   [/(^|[/\\])hooks[/\\]hooks\.json$/i, "plugin-hooks", false],
   // Gemini CLI settings carry `hooks` and `mcpServers` (geminicli.com/docs/hooks, /docs/reference/configuration):
   //   .gemini/settings.json, ~/.gemini/settings.json, /etc/gemini-cli/settings.json,
@@ -38,6 +46,19 @@ const SURFACE = [
   // Kiro hooks run shell commands at session events (kiro.dev/docs/hooks): "Each hook file is a standalone
   //   JSON file at `.kiro/hooks/<id>.json`."
   [/(^|[/\\])\.kiro[/\\]hooks[/\\].+$/i, "kiro-hook", false],
+  // Antigravity hooks (antigravity.google/docs/hooks): workspace `.agents/hooks.json`, global
+  //   `~/.gemini/config/hooks.json`, and for the CLI a `hooks` entry in ~/.gemini/antigravity-cli/settings.json.
+  [/(^|[/\\])(\.gemini[/\\]config|\.agents)[/\\]hooks\.json$/i, "antigravity-hooks", false],
+  [/(^|[/\\])\.gemini[/\\]antigravity-cli[/\\]settings\.json$/i, "antigravity-hooks", false],
+  // Windsurf / Devin Desktop Cascade hooks (docs.devin.ai/desktop/cascade/hooks): user ~/.codeium/windsurf/
+  //   hooks.json (JetBrains ~/.codeium/hooks.json), workspace .devin/hooks.json (legacy .windsurf/hooks.json),
+  //   system /Library/Application Support/{Devin,Windsurf}, /etc/{devin,windsurf}, C:\ProgramData\{Devin,Windsurf}.
+  [/(^|[/\\])(\.codeium[/\\]windsurf|\.codeium|\.devin|\.windsurf)[/\\]hooks\.json$/i, "windsurf-hooks", false],
+  [/(^|[/\\])(etc[/\\](devin|windsurf)|Application Support[/\\](Devin|Windsurf)|ProgramData[/\\](Devin|Windsurf))[/\\]hooks\.json$/i, "windsurf-hooks", false],
+  // Cline hook scripts, one executable per hook type (cline.bot/blog/cline-v3-36-hooks; dirs from
+  //   docs.cline.bot/getting-started/config): ~/.cline/hooks/, ~/Documents/Cline/Hooks/, .cline/hooks/ and the
+  //   legacy .clinerules/hooks/. Before the generic .clinerules entry: first match wins.
+  [/(^|[/\\])(\.cline[/\\]hooks|Cline[/\\]Hooks|\.clinerules[/\\]hooks)[/\\][^/\\]+$/i, "cline-hook", false],
 
   // ---- MCP server configuration (which tools and data sources the agent can reach at all) ----
   [/(^|[/\\])managed-mcp\.json$/i, "managed-mcp", false],
@@ -88,6 +109,13 @@ const SURFACE = [
   // ---- instruction / memory files loaded into context at session start ----
   [/(^|[/\\])\.claude[/\\]rules([/\\].+)?\.md$/i, "claude-rule", false],
   [/(^|[/\\])\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$/i, "claude-memory", true],
+  // OpenClaw (docs.openclaw.ai/concepts/agent-workspace, checked 2026-10-23), workspace ~/.openclaw/workspace:
+  //   SOUL.md "Loaded every session"; MEMORY.md is curated long-term memory, loaded "in the main, private
+  //   session"; memory/YYYY-MM-DD.md, "read today + yesterday on session start". AGENTS.md (also loaded) is
+  //   matched below. After claude-memory, so Claude Code's own memory/MEMORY.md keeps its kind.
+  [/(^|[/\\])SOUL\.md$/i, "openclaw-soul", false],
+  [/(^|[/\\])\.openclaw[/\\]workspace[/\\]memory[/\\][^/\\]+\.md$/i, "openclaw-memory", false],
+  [/(^|[/\\])MEMORY\.md$/i, "openclaw-memory", false],
   [/(^|[/\\])CLAUDE\.local\.md$/i, "CLAUDE.local.md", false],
   [/(^|[/\\])CLAUDE\.md$/i, "CLAUDE.md", true],
   // AGENTS.md also covers Amp's AGENT.md fallback (ampcode.com/docs/customize/agents-md).
@@ -128,6 +156,9 @@ const SURFACE = [
   [/(^|[/\\])\.?amazonq[/\\]mcp\.json$/i, "amazon-q-mcp", false],
   // Kiro: workspace .kiro/settings/mcp.json or user ~/.kiro/settings/mcp.json.
   [/(^|[/\\])\.kiro[/\\]settings[/\\]mcp\.json$/i, "kiro-mcp", false],
+  // Antigravity (antigravity.google/docs/cli/gcli-migration): global ~/.gemini/config/mcp_config.json,
+  //   workspace .agents/mcp_config.json.
+  [/(^|[/\\])(\.gemini[/\\]config|\.agents)[/\\]mcp_config\.json$/i, "antigravity-mcp", false],
 
   [/(^|[/\\])\.windsurfrules$/i, ".windsurfrules", false],
   // Windsurf rules (docs.devin.ai/desktop/cascade/memories): .devin/rules/*.md, .windsurf/rules/*.md, the
@@ -158,6 +189,77 @@ const SURFACE = [
 
 export const SKILL_SURFACE_KINDS = [...new Set(SURFACE.map(([, kind]) => kind))];
 export const SKILL_SURFACE_OBSERVED = [...new Set(SURFACE.filter(([, , o]) => o).map(([, kind]) => kind))];
+
+// The PERSISTENT-INSTRUCTION subset: files the agent loads as standing instructions or memory at the start
+// of every session, so a write into one outlives the conversation that made it. Skills, commands, subagent
+// definitions and configs are left out: installing one of those is its own act, judged elsewhere.
+// cli/oversight-surfaces.mjs protects these paths by default (a write asks under #84 protected-surface).
+export const PERSISTENT_INSTRUCTION_KINDS = Object.freeze([
+  "claude-memory", "CLAUDE.md", "CLAUDE.local.md", "claude-rule",
+  "AGENTS.md", "AGENTS.override.md", "GEMINI.md",
+  ".cursorrules", ".cursor/rules", ".windsurfrules", "windsurf-rule", "windsurf-global",
+  ".clinerules", "cline-rule", "copilot-instructions", "copilot-path-instructions", "kiro-steering",
+  "openclaw-soul", "openclaw-memory"
+]);
+const PERSISTENT = new Set(PERSISTENT_INSTRUCTION_KINDS);
+export function persistentInstructionKind(path) {
+  const k = skillSurfaceKind(path);
+  return k && PERSISTENT.has(k) ? k : null;
+}
+
+// The AGENT-SETTINGS subset: agent and editor files whose documented effect is to skip an approval prompt or to run
+// a command with no further prompt (a hook, an MCP server the client starts, a task that runs on folder open, an
+// approval or sandbox mode). A write into one is how an agent widens its own permissions, so
+// cli/oversight-surfaces.mjs watches these beside the persistent-instruction files (signal "memory-file").
+// The kinds from SURFACE above, with the docs each entry already cites:
+//   claude-settings, claude-managed-settings  permissions.allow / defaultMode and `hooks` (code.claude.com/docs/en/settings)
+//   claude-hook                               hook scripts the settings run (code.claude.com/docs/en/hooks-guide)
+//   claude-user-config                        ~/.claude.json: user and local MCP servers (code.claude.com/docs/en/mcp)
+//   droid-settings, gemini-settings, kiro-hook, antigravity-hooks, windsurf-hooks, cline-hook, plugin-hooks
+//                                             lifecycle hooks that run shell commands (the docs cited at each entry)
+//   managed-mcp, .mcp.json, claude-desktop-config, amp-settings, opencode-config, cursor-mcp, cline-mcp,
+//   windsurf-mcp, vscode-mcp, continue-mcp, zed-mcp, amazon-q-mcp, kiro-mcp, antigravity-mcp
+//                                             an MCP server entry is a command the client launches; Visual Studio reads
+//                                             %USERPROFILE%\.mcp.json, <solution>\.mcp.json, .vscode\mcp.json and
+//                                             .cursor\mcp.json and restarts the servers when the file is saved
+//                                             (learn.microsoft.com/visualstudio/ide/mcp-servers)
+//   codex-config                              approval_policy, sandbox_mode and mcp_servers in .codex/config.toml
+//   vscode-tasks                              a task with runOptions.runOn "folderOpen" runs on open
+// Skills, commands, prompt files, subagent definitions, JetBrains run configurations and dev containers are left
+// out: each is used only when someone invokes or opens it, and installing one is the "extension-install" origin gate.
+const SETTINGS_FROM_SURFACE = [
+  "claude-settings", "claude-managed-settings", "claude-hook", "claude-user-config",
+  "droid-settings", "gemini-settings", "kiro-hook", "antigravity-hooks", "windsurf-hooks", "cline-hook", "plugin-hooks",
+  "managed-mcp", ".mcp.json", "claude-desktop-config", "amp-settings", "opencode-config", "cursor-mcp", "cline-mcp",
+  "windsurf-mcp", "vscode-mcp", "continue-mcp", "zed-mcp", "amazon-q-mcp", "kiro-mcp", "antigravity-mcp",
+  "codex-config", "vscode-tasks"
+];
+// Settings files SURFACE does not list (they carry no instructions to scan), matched here only:
+const SETTINGS_ONLY = [
+  // VS Code workspace settings: chat.tools.terminal.autoApprove and chat.tools.global.autoApprove skip the
+  //   confirmation for terminal commands and tools (code.visualstudio.com/docs/agents/approvals), and
+  //   task.allowAutomaticTasks lets a folderOpen task run.
+  [/(^|[/\\])\.vscode[/\\]settings\.json$/i, "vscode-settings"],
+  // Cursor: permissions.json, ~/.cursor/ or <workspace>/.cursor/, mcpAllowlist and terminalAllowlist "can run without
+  //   approval" (cursor.com/docs/reference/permissions); the CLI's permissions.allow, <project>/.cursor/cli.json and
+  //   ~/.cursor/cli-config.json (cursor.com/docs/cli/reference/permissions).
+  [/(^|[/\\])\.cursor[/\\](permissions|cli|cli-config)\.json$/i, "cursor-permissions"],
+  // Visual Studio: per-solution settings in settings.VisualStudio.json beside the .sln / .slnx (Visual Studio blog,
+  //   September 2026), and <solution>\.vs\mcp.json, an MCP configuration "Specific to Visual Studio"
+  //   (learn.microsoft.com/visualstudio/ide/mcp-servers). CVE-2026-103572 (Visual Studio and SSMS Copilot) reached
+  //   code execution by writing these settings and MCP files under a trailing-dot name.
+  [/(^|[/\\])settings\.VisualStudio\.json$/i, "visualstudio-settings"],
+  [/(^|[/\\])\.vs[/\\]mcp\.json$/i, "visualstudio-mcp"]
+];
+export const AGENT_SETTINGS_KINDS = Object.freeze([...SETTINGS_FROM_SURFACE, ...SETTINGS_ONLY.map(([, k]) => k)]);
+const SETTINGS = new Set(SETTINGS_FROM_SURFACE);
+export function agentSettingsKind(path) {
+  const k = skillSurfaceKind(path);
+  if (k && SETTINGS.has(k)) return k;
+  const p = String(path || "");
+  for (const [re, kind] of SETTINGS_ONLY) if (re.test(p)) return kind;
+  return null;
+}
 
 export function skillSurfaceKind(path) {
   const p = String(path || "");

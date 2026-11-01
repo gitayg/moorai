@@ -13,9 +13,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { REASON, ENFORCEMENT } from "../cli/provenance.mjs";
 import { traceFields } from "./trace-w3c.mjs";
 
-// { trace, provider, model } of the request being handled; model is set once the body is read.
+// { trace, provider, model, agentSession } of the request being handled; model is set once the body is read,
+// agentSession once X-MoorAI-Agent-Identity is judged (./identity.mjs).
 export const REQUEST = new AsyncLocalStorage();
-const requestFields = (r) => (r ? { ...traceFields(r.trace), ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}) } : {});
+const requestFields = (r) => (r ? { ...traceFields(r.trace), ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}), ...(r.agentSession ? { agentSession: r.agentSession } : {}) } : {});
 
 const enforcing = (a) => a.riskLevel === "Blocked" || a.decision === "deny" || a.decision === "ask";
 

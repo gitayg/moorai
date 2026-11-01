@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "preToolUse",
+  "cwd": "/current/working/directory",
+  "tool_name": "fs_read",
+  "tool_input": {
+    "operations": [
+      {
+        "mode": "Line",
+        "path": "/current/working/directory/docs/hooks.md"
+      }
+    ]
+  }
+}

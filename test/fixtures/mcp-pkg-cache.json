@@ -1,0 +1,267 @@
+{
+ "_comment": "The ~/.moorai/mcp-pkg.json shape cli/mcp-package/pkg-report.mjs writes, read back by withPkgMeta (Node) and src-tauri/src/mcp_pkg.rs (cargo test). Same now, same answers: TTL 7 days, at most 1 day of future skew, tampered values dropped.",
+ "now": 1792454400000,
+ "cache": {
+  "v": 1,
+  "entries": {
+   "npm:@scope/srv@1.4.2": {
+    "m": {
+     "count": 1,
+     "org": false,
+     "at": 1792368000000
+    },
+    "s": {
+     "verdict": "warn",
+     "findings": [
+      "single-maintainer",
+      "unpinned-version"
+     ],
+     "at": 1792368000000
+    }
+   },
+   "npm:old-srv@": {
+    "m": {
+     "count": 4,
+     "org": false,
+     "at": 1791763200000
+    },
+    "s": {
+     "verdict": "clean",
+     "findings": [],
+     "at": 1792281600000
+    }
+   },
+   "pypi:mcp-server-git@0.6.2": {
+    "m": {
+     "count": 3,
+     "org": true,
+     "at": 1792454400000
+    },
+    "s": {
+     "verdict": "block",
+     "findings": [
+      "pkg-remote-code",
+      "threat-60",
+      "/Users/alice/secret",
+      "rm -rf /"
+     ],
+     "at": 1792454400000
+    }
+   },
+   "npm:tampered@1.0.0": {
+    "m": {
+     "count": "7; rm -rf",
+     "org": true,
+     "at": 1792454400000
+    },
+    "s": {
+     "verdict": "evil",
+     "findings": [],
+     "at": 1792454400000
+    }
+   },
+   "npm:future@1.0.0": {
+    "m": {
+     "count": 2,
+     "org": false,
+     "at": 1792713600000
+    },
+    "s": {
+     "verdict": "clean",
+     "findings": [],
+     "at": 1792458000000
+    }
+   },
+   "npm:big@1.0.0": {
+    "m": {
+     "count": 50000,
+     "org": false,
+     "at": 1792454400000
+    },
+    "s": {
+     "verdict": "clean",
+     "findings": [
+      "single-maintainer",
+      "single-maintainer",
+      "single-maintainer"
+     ],
+     "at": 1792454400000
+    }
+   },
+   "npm:unknown@1.0.0": {
+    "m": {
+     "count": null,
+     "org": null,
+     "at": 1792454400000
+    }
+   }
+  }
+ },
+ "cases": [
+  {
+   "id": "fresh-both",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "@scope/srv@1.4.2"
+    ]
+   },
+   "maintainers": 1,
+   "maintainersOrg": false,
+   "scan": {
+    "verdict": "warn",
+    "findings": [
+     "single-maintainer",
+     "unpinned-version"
+    ]
+   }
+  },
+  {
+   "id": "case-insensitive-key",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "@Scope/Srv@1.4.2"
+    ]
+   },
+   "maintainers": 1,
+   "maintainersOrg": false,
+   "scan": {
+    "verdict": "warn",
+    "findings": [
+     "single-maintainer",
+     "unpinned-version"
+    ]
+   }
+  },
+  {
+   "id": "other-version",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "@scope/srv@1.4.3"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": null
+  },
+  {
+   "id": "expired-count-fresh-scan",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "old-srv"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": {
+    "verdict": "clean",
+    "findings": []
+   }
+  },
+  {
+   "id": "pypi-filtered-findings",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "mcp-server-git==0.6.2"
+    ]
+   },
+   "maintainers": 3,
+   "maintainersOrg": true,
+   "scan": {
+    "verdict": "block",
+    "findings": [
+     "pkg-remote-code",
+     "threat-60"
+    ]
+   }
+  },
+  {
+   "id": "tampered",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "tampered@1.0.0"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": null
+  },
+  {
+   "id": "future-skew",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "future@1.0.0"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": {
+    "verdict": "clean",
+    "findings": []
+   }
+  },
+  {
+   "id": "clamped",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "big@1.0.0"
+    ]
+   },
+   "maintainers": 1000,
+   "maintainersOrg": false,
+   "scan": {
+    "verdict": "clean",
+    "findings": [
+     "single-maintainer"
+    ]
+   }
+  },
+  {
+   "id": "looked-up-unknown",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "unknown@1.0.0"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": null
+  },
+  {
+   "id": "docker-no-meta",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "mcp/fetch:1.2"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": null
+  },
+  {
+   "id": "local-no-meta",
+   "decl": {
+    "command": "node",
+    "args": [
+     "/Users/me/srv/index.js"
+    ]
+   },
+   "maintainers": null,
+   "maintainersOrg": null,
+   "scan": null
+  }
+ ]
+}

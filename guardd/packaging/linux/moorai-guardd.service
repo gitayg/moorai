@@ -1,0 +1,50 @@
+# moorai-guardd, the MoorAI privileged helper (docs/proposals/guardd-contract.md §4.3, §13.1 decision 3).
+# Runs as root because quarantine has to stop another user's processes; everything else is taken away.
+# The helper reads no environment, argument or user file that could change a path, an origin or a key
+# (§10.2), so this unit sets none.
+[Unit]
+Description=MoorAI privileged helper (moorai-guardd)
+Documentation=https://github.com/gitayg/moorai/blob/main/docs/proposals/guardd-contract.md
+Requires=moorai-guardd.socket
+After=moorai-guardd.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/moorai-guardd
+Restart=always
+RestartSec=2
+UMask=0077
+# /var/lib/moorai root:root 0700: device key, alert queue, chain head, policy cache (§4.2).
+StateDirectory=moorai
+StateDirectoryMode=0700
+# /run/moorai root:root 0755: device.pub for the hook's hello-proof check. Preserved across restarts,
+# because the socket unit's hook.sock lives in the same directory.
+RuntimeDirectory=moorai
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# Hardening (§4.3). The capability set is what quarantine needs: stop and resume another user's
+# processes (CAP_KILL), read their /proc entries (CAP_SYS_PTRACE, CAP_DAC_READ_SEARCH) and add the
+# nftables rule (CAP_NET_ADMIN). Proposed; not yet reviewed against the Linux platform layer.
+CapabilityBoundingSet=CAP_KILL CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# The helper removes enrollSecret from /etc/moorai/secret.json after a bound registration (§4.1).
+ReadWritePaths=-/etc/moorai
+
+[Install]
+WantedBy=multi-user.target

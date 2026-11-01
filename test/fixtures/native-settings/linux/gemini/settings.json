@@ -1,0 +1,8 @@
+{
+  "mcp": {
+    "allowed": [
+      "bad name",
+      "github"
+    ]
+  }
+}

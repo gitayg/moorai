@@ -6,7 +6,10 @@
 // Everything down to the "Policy TRUST + LOAD" banner near the bottom is pure. That last section owns
 // the policy-trust I/O, and it is here rather than in one entrypoint precisely because BOTH need it.
 
+import { readPolicyViaHelper } from "./guardd-policy.mjs";
 import { trustedEnv } from "./server-mode.mjs";
+import { canonicalJson } from "./canonical-json.mjs";
+import { oversightPolicy } from "./oversight-surfaces.mjs";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
@@ -21,11 +24,14 @@ import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyA
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { machinePath, systemTool } from "./machine-dir.mjs";
 import { readConsoleBackoff, backoffSkipsFetch, recordConsoleFailure, clearConsoleBackoff } from "./console-backoff.mjs";
-import { TIER_OF } from "../data/data-tiers.js";
+import { TIER_OF, DATA_TIERS } from "../data/data-tiers.js";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
+import { mcpArgCommandInjection } from "../data/detectors-mcp-arg-injection.js";
+import { mergeOutbound } from "./mcp-outbound.mjs";
 // Declared workload profiles (cli/workload-profile.mjs), re-exported so every surface that composes this
 // core — the hook, @moorai/agent-sdk, its vendored copy — reaches the same evaluation.
 export { evaluateProfile, profilesFrom, rejectedAlert, normalizeRepo, PROFILE_DRIFT } from "./workload-profile.mjs";
@@ -99,7 +105,7 @@ export const MASK_FALLBACKS = new Set(["notify", "justify", "block"]);
 export function threatActionFor(policy, id, opts = {}) {
   const tier = TIER_OF[id];
   let masked = false;
-  for (const act of [policy?.threatPolicy?.[id], tier && policy?.tierPolicy?.[tier]]) {
+  for (const act of [threatPolicyEntry(policy, id), tier && policy?.tierPolicy?.[tier]]) {
     if (!act) continue;
     if (act !== "mask") return act;
     if (masked) continue;
@@ -137,11 +143,14 @@ export function literacyTouchpoint({ threatId = 0, category = "", tool = "moorai
 // read into an agent's context (stage "file") or shipped as an MCP tool-call argument (stage "mcp"/
 // "egress") is worse than one typed into a prompt the user can still edit before sending. Label-only:
 // this adjusts the reported riskLevel, never the allow/ask/deny decision.
+// A secret class is keyed on the threat id: data tier "secret" (#39, a credential in content) plus #55
+// (credential-file access) and #65 (a local secret value sent out). It used to be a regex over the category,
+// which no secret threat's category matches (#39 is "Information & Privacy"), so nothing was raised or recorded.
 const LEVELS = ["Low", "Medium", "High", "Critical"];
-const SECRET_RE = /secret|credential|api[\s-]?key|token|password|private key/i;
-export function isSecretCategory(category) { return SECRET_RE.test(String(category || "")); }
-export function calibrateRisk(base, { stage, category } = {}) {
-  if (!isSecretCategory(category)) return base;
+export const SECRET_THREATS = Object.freeze([...DATA_TIERS.secret, 55, 65]);
+export function isSecretThreat(threatId) { return SECRET_THREATS.includes(Number(threatId)); }
+export function calibrateRisk(base, { stage, threatId } = {}) {
+  if (!isSecretThreat(threatId)) return base;
   const i = LEVELS.indexOf(base);
   if (i < 0) return base;
   if (stage === "file" || stage === "mcp" || stage === "egress") return LEVELS[Math.min(i + 1, LEVELS.length - 1)];
@@ -199,7 +208,7 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     if (opts.only && !opts.only.includes(f.threat.id)) continue;
     const act = threatActionFor(policy, f.threat.id, { mask: !!opts.mask });
     if (act === "disabled") continue;
-    const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
+    const level = calibrateRisk(f.threat.riskLevel, { stage, threatId: f.threat.id });
     out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match, detectorId: f.detectorId });
     if (act === "mask") { if (!out.maskIds.includes(f.threat.id)) out.maskIds.push(f.threat.id); continue; }
     // #3 — "kill" terminates the whole session, not just this call. It still denies the call (Claude
@@ -256,13 +265,72 @@ export function decideThreat(policy, id, detectorId, stage = "prompt") {
   if (!t) return out;
   const act = threatActionFor(policy, id);
   if (act === "disabled") return out;
-  const level = calibrateRisk(t.riskLevel, { stage, category: t.category });
+  const level = calibrateRisk(t.riskLevel, { stage, threatId: id });
   out.findings.push({ threatId: id, category: t.category, riskLevel: level, match: "", detectorId });
   if (act === "block" || act === "kill") { out.decision = "deny"; out.reasons.push(`#${id} ${t.category}`); }
   else if (act === "justify") { out.decision = "ask"; out.reasons.push(`#${id} ${t.category} (needs sign-off)`); }
   if (act === "kill" || (policy?.killOnCritical && act === "block" && level === "Critical")) { out.kill = true; out.killIds.push(id); }
   if (out.decision !== "allow") out.alternatives = orderedAlternatives([t], "");
   return out;
+}
+
+// #84 Weakening oversight (cli/oversight-signals.mjs, cli/oversight-shell.mjs): the hook established the change
+// itself (a diff of the write, or the command's structure), so it is resolved like decideThreat, through the
+// same action table (default justify via APPROVAL_THREATS; threatPolicy[84] may raise it to block or kill, or
+// lower it to notify). The finding's category is the threat's name, which the alert carries and the reason
+// code (OVERSIGHT_WEAKENED) is read from. The signals stay on the finding for the local ledger; no signal,
+// path or value reaches the alert. Id 84, not 81: 81 and 82 are the OT protocol client read and write ids
+// that shipped in 1.28.0 (cli/ot-protocol-client.mjs), and a policy's threatPolicy[81] means OT read.
+//
+// "analysis-incomplete" (the command or write was past a size, script-length or time cap, so it was not read
+// whole) fails closed: it asks even where the policy lowers #84 to notify, and alone it never kills (kill
+// becomes block). A policy that disables #84 still disables it.
+export const OVERSIGHT_THREAT = 84;
+export const OVERSIGHT_CATEGORY = "Weakening oversight";
+export const OVERSIGHT_INCOMPLETE = "analysis-incomplete";
+// "memory-file" (a write into the agent's CLAUDE.md, AGENTS.md, rules or memory files, cli/oversight-surfaces.mjs).
+// The notify default (an alert, no prompt) applies ONLY when the admin configured nothing for #84 (no
+// threatPolicy[84], no tierPolicy covering it) and set no memoryFiles. Once #84 is configured, a memory write gets
+// the stricter of memoryFiles (if set) and #84's action, so the default never weakens an explicit policy, and
+// killOnCritical is left as the policy has it. An invalid memoryFiles or protectMemoryFiles: true takes #84's
+// action. With other #84 signals beside it, the stricter decision stands. A disabled #84 disables it too.
+// "write-target-unknown" (a shell write that cannot be placed, with only the built-in memory-file protection on
+// and a harmless payload, cli/oversight-shell.mjs) is decided the same way.
+const MEMORY_LIKE = new Set(["memory-file", "write-target-unknown"]);
+const MEMORY_ACT = { notify: "notify", ask: "justify", block: "block" };
+const ACT_RANK = { notify: 1, justify: 2, block: 3, kill: 4 };
+const stricterAct = (a, b) => ((ACT_RANK[a] || 0) >= (ACT_RANK[b] || 0) ? a : b);
+function memoryFileAction(policy) {
+  const act = threatActionFor(policy, OVERSIGHT_THREAT);
+  const configured = Boolean(policy?.threatPolicy?.[OVERSIGHT_THREAT] || (TIER_OF[OVERSIGHT_THREAT] && policy?.tierPolicy?.[TIER_OF[OVERSIGHT_THREAT]]));
+  const m = oversightPolicy(policy, () => {}).memory;
+  if (MEMORY_ACT[m]) return configured ? stricterAct(MEMORY_ACT[m], act) : MEMORY_ACT[m];
+  if (m === "inherit") return act;
+  return configured ? act : "notify";
+}
+export function decideOversight(policy, signals, stage = "output") {
+  if (!Array.isArray(signals) || !signals.length) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  if (signals.some((s) => MEMORY_LIKE.has(s))) {
+    const rest = signals.filter((s) => !MEMORY_LIKE.has(s));
+    const act = threatActionFor(policy, OVERSIGHT_THREAT);
+    const md = decideOversightCore(act === "disabled" ? policy : { ...(policy || {}), threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: memoryFileAction(policy) } }, signals, stage);
+    if (!rest.length) return md;
+    const od = decideOversightCore(policy, signals, stage);
+    return RANK[md.decision] > RANK[od.decision] ? md : od;
+  }
+  return decideOversightCore(policy, signals, stage);
+}
+function decideOversightCore(policy, signals, stage) {
+  let pol = policy;
+  if (signals.includes(OVERSIGHT_INCOMPLETE)) {
+    const act = threatActionFor(policy, OVERSIGHT_THREAT);
+    const floor = act === "notify" ? "justify" : act === "kill" && signals.every((s) => s === OVERSIGHT_INCOMPLETE) ? "block" : null;
+    if (floor) pol = { ...(policy || {}), killOnCritical: false, threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: floor } };
+  }
+  const d = decideThreat(pol, OVERSIGHT_THREAT, "oversight-change", stage);
+  for (const f of d.findings) { f.category = OVERSIGHT_CATEGORY; f.oversight = signals.slice(); }
+  d.reasons = d.reasons.map((r) => r.replace(new RegExp(`^#${OVERSIGHT_THREAT} [^(]*?(?= \\(|$)`), `#${OVERSIGHT_THREAT} ${OVERSIGHT_CATEGORY}`));
+  return d;
 }
 
 // Clipboard read in one tool call → outbound upload in a LATER call of the same session. Two content-free
@@ -469,6 +537,8 @@ export function decideMcpServer(policy, serverName) {
 export { redosReason, safeRegex };
 // Enrollment decides coach vs enforce for every surface — see data/enforcement.js.
 export { isEnrolled, enforcementAllowed, coachMessage, coachReason } from "../data/enforcement.js";
+// Default MCP tool policy by class (policy mcpToolClassDefaults) — see ./mcp-tool-class.mjs.
+export { decideMcpToolClass, toolClassAlert } from "./mcp-tool-class.mjs";
 
 // Execution bound. A pattern that survives redosReason() still costs O(n²) in the worst case because
 // `.test()` retries at every start position: measured at 50 KB, the worst surviving shapes ("a*b",
@@ -504,13 +574,36 @@ export function decideMcpArgs(policy, tool, argsText) {
 // content-free alert, and the findings / kill signal from the content scan. The caller layers the
 // impure gates (entitlement envelope, endpoint allow-list, secret-egress) and records the audit line.
 // `mask` (optional): the caller can rewrite the arguments (see threatActionFor); maskIds come back for it.
-export function mcpGateway(engine, policy, { tool, server, args, mask = false }) {
+export function mcpGateway(engine, policy, { tool, server, args, mask = false, localWrite }) {
   const sd = decideMcpServer(policy, server);
   if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const ad = decideMcpArgs(policy, tool, args);
   if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true }, mask });
-  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds };
+  mergeArgInjection(d, policy, tool, args);
+  mergeOutbound(d, { engine, policy, tool, server, args, decide: decideText, localWrite });
+  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds, unevaluated: d.unevaluated || null };
+}
+
+// #54 / OWASP MCP05 — a data argument (host, path, file name, id) with a shell command appended
+// (data/detectors-mcp-arg-injection.js). Read on the PARSED arguments, because which key a value sits
+// under decides whether a separator is an injection or the command itself. Skipped when the text scan
+// already raised #54, so a call is reported once. Merged by rank into the content decision; the finding
+// is content-free (empty match) and its reason names the argument key and the operator kind.
+function mergeArgInjection(d, policy, tool, args) {
+  if (d.findings.some((f) => f.threatId === 54)) return;
+  let parsed;
+  try { parsed = typeof args === "string" ? JSON.parse(args) : args; } catch { return; }
+  const hit = mcpArgCommandInjection(tool, parsed);
+  if (!hit) return;
+  const t = decideThreat(policy, 54, "mcp-arg-command-injection", "mcp");
+  if (!t.findings.length) return;
+  d.findings.push(...t.findings);
+  const key = hit.key.replace(/[^\w.-]/g, "") || "argument";
+  if (t.decision !== "allow") d.reasons.push(`${t.reasons[0]}: command injection in MCP argument "${key}" (${hit.op})`);
+  if (RANK[t.decision] > RANK[d.decision]) d.decision = t.decision;
+  if (t.kill) { d.kill = true; d.killIds.push(54); }
+  for (const a of t.alternatives) if (!d.alternatives.includes(a)) d.alternatives.push(a);
 }
 
 // T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced
@@ -758,12 +851,8 @@ export const POLICY_SIG_VERSION = 1;
 
 // Deterministic serialization — key-sorted, so the digest does not depend on JSON key order or on the
 // exact bytes the cache file happens to hold. Must stay byte-identical to the console's canonicalJson.
-export function canonicalJson(v) {
-  if (v === undefined) return "null";
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
-}
+// The serializer lives in cli/canonical-json.mjs (one implementation, documented there).
+export { canonicalJson };
 
 // sha256 over the whole policy MINUS the signature envelope — every field the engine reads is covered.
 export function policyDigest(policy) {
@@ -1303,7 +1392,10 @@ const XP_PATH_MAX = 12;    // paths returned
 const XP_SUBST_MAX = 2000; // how far we scan for the close of a $( … ) / ` … ` before giving up
 
 // Commands whose non-flag arguments are files they read into their output.
-const XP_READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "xxd", "nl", "od", "base64", "strings", "tac", "rev"]);
+// Document converters read their input too (textutil, pandoc, pdftotext, antiword, catdoc, docx2txt, unrtf): a
+// .docx turned into text reaches the agent the same way `cat` does. Their option values and output names land
+// here as well; a path that is not a readable file contributes nothing.
+const XP_READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "xxd", "nl", "od", "base64", "strings", "tac", "rev", "textutil", "pandoc", "pdftotext", "antiword", "catdoc", "docx2txt", "unrtf"]);
 // `cp` reads the SOURCE bytes (a rename does not, which is why `mv` is deliberately absent). Only the
 // sources count — scanning the DESTINATION would flag `cp new.env .env` for the content already there.
 const XP_COPY = new Set(["cp"]);
@@ -2103,7 +2195,17 @@ function writePolicyPin(config, pin, keys, mark) {
 // tool call then skipped the fetch that would have delivered a new policy (measured under CPU
 // contention: test/console-backoff.test.mjs WORKER). Without network the worker writes nothing: no
 // back-off, no cache, no pin, no last-known-good.
-export async function loadVerifiedPolicy(config, { backoffDraw, network = true } = {}) {
+// actor: the device's keyed actor (h2:, cli/content-hash.mjs actorHash), named on the fetch so the console can add
+// this device's decided approvals to the signed policy (cli/approval-routing.mjs). Never a hostname or login.
+//
+// helper: null (the default: never ask the helper), or { mode } from the machine config's `helper` field
+// (cli/moorai-hook.mjs passes it), plus test-only connect options (cli/guardd-policy.mjs). When the device
+// already holds a policy key (anchored or pinned) and moorai-guardd answers with a fresh policy, that policy
+// is verified exactly like a fresh fetch (signature, tenant, rollback marks) and used; the helper fetched it
+// signed with the bound device key, so it carries the console's approval receipts. Anything else — helper
+// absent, timed out, unproven, another tenant, a stale, unsigned or refused body — continues below on the
+// direct install-token path, unchanged. An unpinned device always takes the direct path (first contact pins).
+export async function loadVerifiedPolicy(config, { backoffDraw, network = true, actor = "", helper = null } = {}) {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
@@ -2171,6 +2273,29 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
   const cached = cacheRaw == null ? null : verify(cacheRaw);
   if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
   behind("cache", cached);
+
+  if (helper && network && (trust.mode === "anchored" || trust.mode === "pinned") && !absence.suspicious) {
+    const h = await (helper.read || readPolicyViaHelper)({ tenant: config.tenant, actor, mode: helper.mode, clientVersion: helper.clientVersion, connectOpts: helper.connectOpts || {},
+      ...(helper.budgetMs ? { budgetMs: helper.budgetMs } : {}), ...(helper.policyTimeoutMs ? { policyTimeoutMs: helper.policyTimeoutMs } : {}) }).catch(() => null);
+    if (h && h.raw) {
+      const v = verify(h.raw);
+      if (v.policy) {
+        behind("helper", v);
+        try { mkdirSync(dirname(POLICY_CACHE), { recursive: true }); writeFileSync(POLICY_CACHE, h.raw); } catch {}
+        // Same bar as the fresh path: a real signature under the anchor or the pin advances the mark and
+        // becomes last-known-good. No published key is passed, so a pinned device learns keys only from a
+        // signed nextKeys newer than the mark (policyKeysToLearn), as on a direct fetch.
+        if (v.status === "ok") {
+          armPolicyPin(config, trust, { ...pin, iat: user.mark }, v, JSON.parse(h.raw), "", rejected, mark);
+          writePolicyLkg(h.raw);
+        }
+        return { policy: v.policy, source: "fresh", via: "helper", rejected, pin, trust, absence };
+      }
+      // A helper copy behind the device's mark is not tampering (the hook may have fetched directly more
+      // recently); a signature that does not verify is reported. Either way the direct path decides.
+      if (v.bad !== "malformed" && v.bad !== "rollback") rejected.push({ source: "helper", status: v.bad });
+    }
+  }
   // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
   // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
   // delivered fresh over the network from the configured server can arm or roll the pin forward.
@@ -2197,7 +2322,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
     // only on an UNPINNED device (first contact). Anchored devices have the stronger statement; a pinned
     // one must never learn from an unsigned answer, so it does not ask (policyKeysToLearn).
     const [raw, published] = await Promise.all([
-      q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}`),
+      q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}${typeof actor === "string" && /^h2:[0-9a-f]{16,64}$/.test(actor) ? `&actor=${encodeURIComponent(actor)}` : ""}`),
       trust.mode === "unpinned" ? q("/api/policy/pubkey") : Promise.resolve("")
     ]);
     // Any HTTP response means the console is reachable; only a fetch with no response backs off.

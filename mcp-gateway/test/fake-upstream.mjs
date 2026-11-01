@@ -16,6 +16,8 @@
 // GET                  → a standalone SSE stream carrying one server notification, then closes
 //                        (the legacy server-initiated stream); `noGet` → 405 as the 2026-07-28 spec says.
 // DELETE               → 200 (session terminated)
+// `listDelayMs`         → a number, or (msg) → number: answer that tools/list after this many ms (a stalled
+//                        upstream, for the gateway's own re-list before a block-mode call).
 import http from "node:http";
 
 export async function startUpstream(opts = {}) {
@@ -40,6 +42,12 @@ export async function startUpstream(opts = {}) {
       try { m = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
       rec.json = m;
       if (m.id == null) { res.writeHead(202); res.end(); return; }
+      const delay = m.method === "tools/list" ? Number((typeof opts.listDelayMs === "function" ? opts.listDelayMs(m) : opts.listDelayMs) || 0) : 0;
+      if (delay > 0) setTimeout(() => answer(m, res), delay); else answer(m, res);
+    });
+  });
+  function answer(m, res) {
+    {
       let result;
       if (m.method === "initialize") {
         res.writeHead(200, { "Content-Type": "application/json", "Mcp-Session-Id": sessionId });
@@ -80,10 +88,11 @@ export async function startUpstream(opts = {}) {
         return;
       }
       if (opts.chunked) { res.writeHead(200, { "Content-Type": "application/json", "Transfer-Encoding": "chunked" }); res.write(reply.slice(0, 10)); res.end(reply.slice(10)); return; }
+      if (res.destroyed) return;
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(reply) });
       res.end(reply);
-    });
-  });
+    }
+  }
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${server.address().port}/mcp`;
   return {

@@ -22,16 +22,17 @@
 import { decideText } from "../cli/hook-core.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { REASON, ENFORCEMENT } from "../cli/provenance.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
 
 // PII-class threats ("this text contains personal or business data"), checked against data/threats.json and
 // the runtime detectors (data/detectors.js):
-//   1 sensitive data (payment card, IBAN, CVV) · 9 intellectual property (confidentiality markers) ·
+//   1 sensitive data (IBAN) · 90 cardholder data (payment card, CVV) · 9 intellectual property (confidentiality markers) ·
 //   15 employee / customer personal data (email, phone, national id, passport) · 18 sensitive data retained
 //   in a conversation · 27 leakage via history / uploads · 36 cross-context leakage · 44 PHI.
 // Not here: 39 (API keys, tokens, private keys, JWTs, DB connection strings) and 65 (a local secret value,
 // credential-shaped egress) are secrets, never exempt. Nor is #1's clipboard-to-sink detector: it matches a
 // command that sends the clipboard to a network sink, an exfiltration step, not data.
-export const CONTEXT_REPORT_ONLY = Object.freeze(new Set([1, 9, 15, 18, 27, 36, 44]));
+export const CONTEXT_REPORT_ONLY = Object.freeze(new Set([1, 9, 15, 18, 27, 36, 44, 90]));
 export const CONTEXT_NEVER_EXEMPT = Object.freeze(new Set([39, 65]));
 const NOT_DATA_DETECTORS = new Set(["clipboard-to-sink"]);
 export const isPrivacy = (f) => CONTEXT_REPORT_ONLY.has(f.threat.id) && !NOT_DATA_DETECTORS.has(f.detectorId);
@@ -88,11 +89,11 @@ export async function scanContext(rt, it, text, { settle }) {
   const prov = { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } };
   const tool = `model-proxy:${it.kind}`;
   for (const f of p.findings) {
-    rt.reporter.post({ threatId: f.threatId, category: f.category, riskLevel: f.riskLevel, stage: CONTEXT_STAGE, tool, decision: "notify", contentHash: rt.hash(f.match || ""), ...(p.decision !== "allow" ? { enforcement: ENFORCEMENT.LIMITED } : {}) }, prov);
+    rt.reporter.post({ threatId: f.threatId, category: f.category, riskLevel: f.riskLevel, stage: CONTEXT_STAGE, tool, decision: "notify", contentHash: spanHash(f.threatId, f.match || "", rt.hash), ...(p.decision !== "allow" ? { enforcement: ENFORCEMENT.LIMITED } : {}) }, prov);
   }
   const d = decideText(rest, s.policy, text, "prompt", { ctx: it.ctx });
   for (const f of d.findings) {
-    rt.reporter.post({ threatId: f.threatId, category: f.category, riskLevel: d.decision === "deny" ? "Blocked" : f.riskLevel, stage: "prompt", tool, contentHash: rt.hash(f.match || "") }, prov);
+    rt.reporter.post({ threatId: f.threatId, category: f.category, riskLevel: d.decision === "deny" ? "Blocked" : f.riskLevel, stage: "prompt", tool, contentHash: spanHash(f.threatId, f.match || "", rt.hash) }, prov);
   }
   if (d.decision !== "ask" || !settle || rt.settings.passThrough) return { decision: d.decision, reasons: d.reasons };
   const h = settleHeadlessAsk({ active: true, headless: rt.settings.headless }, s.policy, { decision: "ask", reason: d.reasons.join(", "), tool: it.kind });

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MoorAI Browser Guard managed settings (Chrome and Edge 3rdparty extension policy) for extension
+     __EXTENSION_ID__. Force-install itself uses the browsers' own ExtensionInstallForcelist policy. -->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="mooraibg" namespace="MoorAI.Policies.BrowserGuard" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_CHROMIUM_102" displayName="$(string.SUPPORTED_CHROMIUM_102)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="MoorAI" displayName="$(string.MoorAI)" />
+    <category name="BrowserGuardChrome" displayName="$(string.BrowserGuardChrome)">
+      <parentCategory ref="MoorAI" />
+    </category>
+    <category name="BrowserGuardEdge" displayName="$(string.BrowserGuardEdge)">
+      <parentCategory ref="MoorAI" />
+    </category>
+  </categories>
+  <policies>
+    <policy name="Chrome_ServerUrl" class="Machine" displayName="$(string.ServerUrl)" explainText="$(string.ServerUrl_Explain)" presentation="$(presentation.ServerUrl)" key="Software\Policies\Google\Chrome\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardChrome" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <text id="ServerUrl" valueName="serverUrl" maxLength="2048" />
+      </elements>
+    </policy>
+    <policy name="Chrome_InstallToken" class="Machine" displayName="$(string.InstallToken)" explainText="$(string.InstallToken_Explain)" presentation="$(presentation.InstallToken)" key="Software\Policies\Google\Chrome\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardChrome" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <text id="InstallToken" valueName="installToken" maxLength="512" />
+      </elements>
+    </policy>
+    <policy name="Chrome_Mode" class="Machine" displayName="$(string.Mode)" explainText="$(string.Mode_Explain)" presentation="$(presentation.Mode)" key="Software\Policies\Google\Chrome\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardChrome" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <enum id="Mode" valueName="mode">
+          <item displayName="$(string.Mode_Coach)"><value><string>coach</string></value></item>
+          <item displayName="$(string.Mode_Block)"><value><string>block</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="Chrome_ReportEnabled" class="Machine" displayName="$(string.ReportEnabled)" explainText="$(string.ReportEnabled_Explain)" key="Software\Policies\Google\Chrome\3rdparty\extensions\__EXTENSION_ID__\policy" valueName="reportEnabled">
+      <parentCategory ref="BrowserGuardChrome" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="Chrome_LockSettings" class="Machine" displayName="$(string.LockSettings)" explainText="$(string.LockSettings_Explain)" key="Software\Policies\Google\Chrome\3rdparty\extensions\__EXTENSION_ID__\policy" valueName="lockSettings">
+      <parentCategory ref="BrowserGuardChrome" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="Edge_ServerUrl" class="Machine" displayName="$(string.ServerUrl)" explainText="$(string.ServerUrl_Explain)" presentation="$(presentation.ServerUrl)" key="Software\Policies\Microsoft\Edge\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardEdge" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <text id="ServerUrl" valueName="serverUrl" maxLength="2048" />
+      </elements>
+    </policy>
+    <policy name="Edge_InstallToken" class="Machine" displayName="$(string.InstallToken)" explainText="$(string.InstallToken_Explain)" presentation="$(presentation.InstallToken)" key="Software\Policies\Microsoft\Edge\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardEdge" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <text id="InstallToken" valueName="installToken" maxLength="512" />
+      </elements>
+    </policy>
+    <policy name="Edge_Mode" class="Machine" displayName="$(string.Mode)" explainText="$(string.Mode_Explain)" presentation="$(presentation.Mode)" key="Software\Policies\Microsoft\Edge\3rdparty\extensions\__EXTENSION_ID__\policy">
+      <parentCategory ref="BrowserGuardEdge" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <elements>
+        <enum id="Mode" valueName="mode">
+          <item displayName="$(string.Mode_Coach)"><value><string>coach</string></value></item>
+          <item displayName="$(string.Mode_Block)"><value><string>block</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="Edge_ReportEnabled" class="Machine" displayName="$(string.ReportEnabled)" explainText="$(string.ReportEnabled_Explain)" key="Software\Policies\Microsoft\Edge\3rdparty\extensions\__EXTENSION_ID__\policy" valueName="reportEnabled">
+      <parentCategory ref="BrowserGuardEdge" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="Edge_LockSettings" class="Machine" displayName="$(string.LockSettings)" explainText="$(string.LockSettings_Explain)" key="Software\Policies\Microsoft\Edge\3rdparty\extensions\__EXTENSION_ID__\policy" valueName="lockSettings">
+      <parentCategory ref="BrowserGuardEdge" />
+      <supportedOn ref="SUPPORTED_CHROMIUM_102" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+  </policies>
+</policyDefinitions>

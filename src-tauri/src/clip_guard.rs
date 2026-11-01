@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 pub const RATE_WINDOW_MS: u64 = 10 * 60 * 1000;
+// Threats whose alert hash is process-keyed (data/cardholder.js PROCESS_KEYED_THREATS): #90 cardholder data.
+pub const PROCESS_KEYED_THREATS: [u64; 1] = [90];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode { Off, Alert, Coach, Clear }
@@ -173,7 +175,9 @@ impl Guard {
                 let Some(text) = p.clip.read_text().filter(|t| !t.trim().is_empty()) else { return Outcome::NoText };
                 // Not answered (the webview is still loading): forget the counter so the next tick asks again.
                 let Some(found) = p.scanner.scan(&text) else { self.last_count = None; return Outcome::ScannerUnavailable };
-                let s = Scanned { count, findings: found, hash: (p.hash)(&text), local: self.local_digest(&text) };
+                // A card on the clipboard: the hash of the whole text is process-keyed (content_hash::process_hash).
+                let hash = if found.iter().any(|f| PROCESS_KEYED_THREATS.contains(&f.threat_id)) { crate::content_hash::process_hash(&text) } else { (p.hash)(&text) };
+                let s = Scanned { count, findings: found, hash, local: self.local_digest(&text) };
                 let out = (s.findings.clone(), s.hash.clone(), s.local);
                 self.scanned = Some(s);
                 out
@@ -327,6 +331,7 @@ mod tests {
             if text.contains("AKIA") { out.push(Finding { detector: "secret-aws-akia".into(), threat_id: 39, risk: "Critical".into() }); }
             if text.contains('@') { out.push(Finding { detector: "dlp-email".into(), threat_id: 15, risk: "High".into() }); }
             if text.contains("ignore previous") { out.push(Finding { detector: "inj-ignore".into(), threat_id: 3, risk: "High".into() }); }
+            if text.contains("4111") { out.push(Finding { detector: "dlp-payment-card".into(), threat_id: 90, risk: "Critical".into() }); }
             Some(out)
         }
     }
@@ -387,6 +392,29 @@ mod tests {
         assert_eq!(a["riskLevel"], "Critical");
         assert!(a["contentHash"].as_str().unwrap().starts_with("h2:"));
         assert!(w.sink.notes.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_card_on_the_clipboard_is_hashed_under_the_process_key_not_the_tenant_key() {
+        const CARD: &str = "card 4111 1111 1111 1111 exp 12/29";
+        let w = World::new(None, CHATGPT);
+        let mut g = guard("alert");
+        w.tick(&mut g);
+        w.clip.copy(CARD);
+        assert!(matches!(w.tick(&mut g), Outcome::Acted { alerted: true, .. }));
+        let h = w.sink.alerts.borrow()[0]["contentHash"].as_str().unwrap().to_string();
+        let tenant = crate::content_hash::hash_with_key(crate::content_hash::derive_key("tok-test").as_ref(), CARD);
+        assert!(h.starts_with("proc:") && h.len() == 21, "{h}");
+        assert_ne!(h, tenant);
+        assert!(!h.contains(&tenant[3..]));
+        assert_eq!(h, crate::content_hash::process_hash(CARD), "stable within the process");
+        assert_eq!(w.sink.alerts.borrow()[0]["threatId"], 90);
+        // A card next to a secret: any #90 finding on the clipboard keeps the hash process-keyed.
+        let both = format!("{CARD} {SECRET}");
+        w.clip.copy(&both);
+        w.tick(&mut g);
+        let h2 = w.sink.alerts.borrow()[1]["contentHash"].as_str().unwrap().to_string();
+        assert!(h2.starts_with("proc:"), "{h2}");
     }
 
     #[test]

@@ -27,7 +27,7 @@ const MEMORY_KINDS = new Set([
   "AGENTS.md", "AGENTS.override.md", "GEMINI.md",
   ".cursorrules", ".cursor/rules", ".windsurfrules", "windsurf-rule", "windsurf-global",
   ".clinerules", "cline-rule", "copilot-instructions", "copilot-path-instructions",
-  "kiro-steering", "kiro-spec",
+  "kiro-steering", "kiro-spec", "openclaw-soul", "openclaw-memory",
   "claude-skill", "claude-agent", "claude-command", "plugin-agent",
   "cursor-command", "windsurf-workflow", "cline-workflow", "copilot-prompt", "copilot-agent",
   "codex-prompt", "gemini-command", "opencode-command", "opencode-agent"

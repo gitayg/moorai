@@ -41,7 +41,7 @@ const SUMMARY = "Agent session summary";
 const PATH_TEXT = "zz-trail-path-4821";
 const URL_TEXT = "trail-canary-9931.example.invalid";
 const BENIGN = `ls -la /tmp/${PATH_TEXT} && echo https://${URL_TEXT}/q?k=v9931`;
-const CONTRACT = ["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model"];
+const CONTRACT = ["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model", "origin"];
 // Fields a top-level hook call's record does not carry: parentSpanId and contextSession (a sub-agent's records
 // only), provider and model (the model proxy's records only).
 const NOT_ON_HOOK = ["parentSpanId", "contextSession", "provider", "model"];
@@ -375,6 +375,17 @@ test("builder: contextSession (the keyed id of the tree contextRoot belongs to) 
     ["empty", { ...ctx, contextSession: "" }],
     ["not a string", { ...ctx, contextSession: 42 }]
   ]) assert.equal("contextSession" in t.buildActionRecord({ tool: "Bash", ...f }), false, why);
+});
+
+test("builder: origin is kept only in the origin table's shape, kind and status re-derived from its basis", async () => {
+  const t = await TRAIL();
+  const o = { v: 1, kind: "agent", status: "inferred", basis: "no-moorai-ask", thread: "main", hostPrompt: "unknown" };
+  assert.deepEqual(t.buildActionRecord({ tool: "Bash", origin: o }).origin, o);
+  assert.equal(t.buildActionRecord({ tool: "Bash", origin: { ...o, status: "observed" } }).origin.status, "inferred", "never upgraded");
+  assert.equal("origin" in t.buildActionRecord({ tool: "Bash", origin: { ...o, basis: "made-up" } }), false);
+  assert.equal("origin" in t.buildActionRecord({ tool: "Bash", origin: "agent" }), false);
+  assert.equal("origin" in t.buildActionRecord({ tool: "Bash" }), false);
+  assert.equal("cmd" in t.buildActionRecord({ tool: "Bash", origin: { ...o, cmd: "rm -rf /" } }).origin, false);
 });
 
 test("queue age: at flush time records older than 89 days are dropped and counted in actionTrailDropped, not sent to be rejected", async () => {

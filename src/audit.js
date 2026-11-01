@@ -1,4 +1,4 @@
-import { contentHash } from "./content-hash.js";
+import { spanHash } from "./span-hash.js";
 
 const KEY = "raiseme.audit";
 const MAX = 100;
@@ -35,7 +35,7 @@ export class Audit {
         stage,
         tool,
         ts,
-        contentHash: content ? contentHash(content) : null
+        contentHash: content ? spanHash(finding.threat.id, content) : null
       };
     }
 

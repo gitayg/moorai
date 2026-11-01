@@ -115,7 +115,12 @@ test("QUIET: a console that connects but never answers keeps the latency back-of
     // A console that connects but never answers anything. Alerts are counted on receipt and never answered
     // either: an answered post would mean the console is reachable again, which rightly ends the back-off.
     if (/^\/api\/policy(\?|$)/.test(req.url)) { if (req.headers["x-install-token"] === token) policyRequests++; return; }
-    let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { if (req.url === "/api/alerts" && req.headers["x-install-token"] === token) alerts.push(b); });
+    // The alert outbox's worker posts in batches (POST /api/alerts/batch): each alert in a batch counts.
+    let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
+      if (req.headers["x-install-token"] !== token) return;
+      if (req.url === "/api/alerts") alerts.push(b);
+      if (req.url === "/api/alerts/batch") { try { for (const a of JSON.parse(b).alerts) alerts.push(JSON.stringify(a)); } catch { /* ignore */ } }
+    });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const sb = sandbox(server.address().port);
@@ -138,7 +143,8 @@ test("QUIET: a console that connects but never answers keeps the latency back-of
     // console never answers), a call that did not fetch had nothing to wait for. Wall-clock time is
     // reported, not asserted: on a loaded runner a bare hook spawn alone has been measured above 1s.
     assert.ok(fetched <= 4, `calls under back-off fetched the policy ${fetched}/8 times (ms: ${calls.map((c) => `${c.ms}${c.fetched ? "F" : ""}`).join(", ")})`);
-    // The alerts go out through the detached worker, whose own budget is 10s per post: poll up to that.
+    // The alerts go out through the outbox's detached worker, whose own budget is 10s per request: its first
+    // batch waits that out, then every alert queued meanwhile gets its first attempt. Poll up to that.
     for (let i = 0; i < 150 && alerts.length < 9; i++) await new Promise((r) => setTimeout(r, 100));
     assert.ok(alerts.length >= 9, `every deny alert reached the console: ${alerts.length}/9`);
   } finally { server.closeAllConnections?.(); server.close(); rmTree(home); }

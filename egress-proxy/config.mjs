@@ -22,6 +22,7 @@ export const DEFAULTS = Object.freeze({
   idleTimeoutMs: 120000,
   connectTimeoutMs: 10000,
   dnsTimeoutMs: 5000,
+  helloTimeoutMs: 5000,
   maxHeaderBytes: 16384,
   siblingPorts: SIBLING_PORTS
 });
@@ -31,7 +32,8 @@ const NUM_FLAGS = {
   "--request-timeout-ms": ["requestTimeoutMs", 100, 3600000],
   "--idle-timeout-ms": ["idleTimeoutMs", 100, 86400000],
   "--connect-timeout-ms": ["connectTimeoutMs", 100, 600000],
-  "--dns-timeout-ms": ["dnsTimeoutMs", 100, 600000]
+  "--dns-timeout-ms": ["dnsTimeoutMs", 100, 600000],
+  "--hello-timeout-ms": ["helloTimeoutMs", 100, 600000]
 };
 
 // The MCP gateway's loopback test (mcp-gateway/config.mjs), kept here so the proxy imports no gateway code.
@@ -81,7 +83,7 @@ export const USAGE = `usage: moorai-egress-proxy [--host 127.0.0.1] [--port ${DE
                           [--max-connections ${DEFAULTS.maxConnections}] [--headers-timeout-ms ${DEFAULTS.headersTimeoutMs}]
                           [--request-timeout-ms ${DEFAULTS.requestTimeoutMs}] [--idle-timeout-ms ${DEFAULTS.idleTimeoutMs}]
                           [--connect-timeout-ms ${DEFAULTS.connectTimeoutMs}] [--dns-timeout-ms ${DEFAULTS.dnsTimeoutMs}]
-                          [--sibling-ports ${SIBLING_PORTS.join(",")}]
+                          [--hello-timeout-ms ${DEFAULTS.helloTimeoutMs}] [--sibling-ports ${SIBLING_PORTS.join(",")}]
 
   A forward proxy (HTTP_PROXY / HTTPS_PROXY) that enforces the egressRules and egressDefault of the
   verified console policy and the root-owned machine-wide config on every connection it carries:
@@ -102,5 +104,6 @@ export const USAGE = `usage: moorai-egress-proxy [--host 127.0.0.1] [--port ${DE
   --idle-timeout-ms <n>      a connection or tunnel with no traffic either way for this long is closed
   --connect-timeout-ms <n>   time to open the upstream TCP connection
   --dns-timeout-ms <n>       time to resolve the destination
+  --hello-timeout-ms <n>     time a CONNECT client has, from its first byte, to complete a TLS ClientHello
   --sibling-ports <list>     ports never connected to on a loopback or local address, beside the proxy's
                              own (default ${SIBLING_PORTS.join(",")}; "" for none)`;

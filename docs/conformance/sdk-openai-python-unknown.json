@@ -1,0 +1,47 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.494Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "sdk",
+      "id": "sdk-openai-python",
+      "label": "OpenAI SDK for Python",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "sdk-not-installed"
+    }
+  ],
+  "reasons": {
+    "sdk-not-installed": "the official SDK package is not installed; the tier installs nothing"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "7e75853e90105796be828bef0c571b8425c2aad54672cf10dd8a017d46bf69ec",
+    "sig": "zbgVQ164w8LU22/6LjA3RE6r6PM49iFEQH5lkXYRIMTtgCR7s/+xjsqjvoMN7l08Ku5clvsWN6Y2k8Zc/vBdCQ==",
+    "ephemeral": false
+  }
+}

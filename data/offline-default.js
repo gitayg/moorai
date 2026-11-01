@@ -5,7 +5,7 @@
 // device whose posture is "fail-open" (the default) — that path stays exactly as before (exit 0/allow).
 //
 // What it enforces (via the same policy mechanism as a real policy — no special engine path):
-//   - block   secrets / PII / regulated-data egress   (threats 39, 15, 1, 44)
+//   - block   secrets / PII / regulated-data egress   (threats 39, 15, 1, 44, 90)
 //   - justify destructive commands                    (threat 43 — also the built-in default anyway)
 //   - justify (ask) on every MCP tool-call            (mcpFloor: raises an otherwise-allowed call to ask)
 // Benign reads / commands still resolve to allow — fail-closed hardens the high-risk categories, it does
@@ -26,7 +26,8 @@ export const OFFLINE_DEFAULT_POLICY = {
   threatPolicy: {
     39: "block",   // Secrets — API keys, tokens, private keys
     15: "block",   // PII — email, phone, national ID, passport
-    1: "block",    // Payment-card data / PCI
+    1: "block",    // IBAN / bank account
+    90: "block",   // Cardholder data / PCI (card number, security code)
     44: "block",   // PHI / HIPAA
     43: "justify"  // Destructive / delete commands (43 already defaults to justify; explicit for review)
   }

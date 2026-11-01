@@ -4,6 +4,10 @@
 //   const report = await scanBeforeEmbed(chunks, { source: "kb/handbook" });
 //   const addDocs = guardEmbed((docs) => vectorStore.addDocuments(docs), { source: "kb/handbook" });
 //   await addDocs(docs);                    // denied chunks never reach vectorStore.addDocuments
+//   // Who wrote the chunks: a shopper's review, a support ticket, a staff edit. A business-value claim
+//   // (a price, a policy change, payment details, "confirmed by management") from an untrusted or unknown
+//   // author raises #21 under policy.indexProvenance.untrustedClaims (cli/index-scan.mjs).
+//   await scanBeforeEmbed(reviews, { source: { name: "kb/reviews", trust: "untrusted", kind: "customer" } });
 //
 // The same runtime and policy as createMoorAI (./runtime.mjs scanForIndex, cli/index-scan.mjs): the
 // engine's index stage, policy.indexScanAction ("report" default, "block"), content-free alerts to the
@@ -24,15 +28,18 @@ function runtimeFor(opts) {
 
 function failOpenReport(n, err) {
   const idx = Array.from({ length: n }, (_, i) => i);
-  return { action: "report", policyId: null, failOpen: true, error: String(err && err.message || err), results: idx.map((i) => ({ index: i, verdict: "allow", threatIds: [], categories: [], reasons: [], findings: [] })), allowed: idx, flagged: [], denied: [] };
+  return { action: "report", policyId: null, failOpen: true, error: String(err && err.message || err), results: idx.map((i) => ({ index: i, verdict: "allow", threatIds: [], categories: [], reasons: [], findings: [] })), allowed: idx, flagged: [], held: [], denied: [] };
 }
 
 // chunks: an array of strings or objects (a LangChain Document { pageContent, metadata }, a { text } or
-// { content } record — every string value is scanned, metadata included). Resolves to
+// { content } record — every string value is scanned, metadata included). opts.source: a string label, or
+// { name?, trust?: "trusted" | "untrusted" | "unknown", kind? } for the author of every chunk in the call.
+// Resolves to
 //   { action: "report" | "block", policyId,
-//     results: [{ index, verdict: "allow" | "flag" | "deny", threatIds, categories, reasons, findings }],
-//     allowed: [index…], flagged: [index…], denied: [index…] }
-// findings are content-free ({ threatId, category, riskLevel, stage: "index", detectorId }).
+//     results: [{ index, verdict: "allow" | "flag" | "hold" | "deny", threatIds, categories, reasons, findings, claims? }],
+//     allowed: [index…], flagged: [index…], held: [index…], denied: [index…] }
+// findings are content-free ({ threatId, category, riskLevel, stage: "index", detectorId }); `claims` (the
+// kinds price / policy / payment / authority) is present on a chunk the provenance check raised.
 export async function scanBeforeEmbed(chunks, opts = {}) {
   const list = Array.isArray(chunks) ? chunks : [chunks];
   try {
@@ -46,9 +53,10 @@ export async function scanBeforeEmbed(chunks, opts = {}) {
 }
 
 // guardEmbed(embedFn, opts) → async (chunks, ...rest) => embedFn(kept, ...rest)
-// Scans the chunks first; a denied chunk (policy "block" only) is dropped from the array embedFn
-// receives, and the report — indexes relative to the ORIGINAL array — goes to opts.onReport, so a
-// caller that keeps ids alongside its chunks can drop the same entries. When every chunk is denied,
+// Scans the chunks first; a denied chunk (policy "block" only) and a held one (indexProvenance
+// untrustedClaims "ask": waiting for a person's review) are dropped from the array embedFn receives, and
+// the report — indexes relative to the ORIGINAL array, held ones in `held` — goes to opts.onReport, so a
+// caller that keeps ids alongside its chunks can drop the same entries or queue them for review. When every chunk is denied,
 // embedFn is not called and the wrapper resolves to []. A non-array first argument is one chunk, passed
 // through as it was when it is kept. Use it on the step that takes documents (vectorStore.addDocuments,
 // an embeddings call whose output you store) rather than on a lower layer whose caller expects one
@@ -63,8 +71,9 @@ export function guardEmbed(embedFn, opts = {}) {
     const list = single ? [chunks] : chunks;
     const report = await scanBeforeEmbed(list, { ...opts, runtime: { scanForIndex: async (c, o) => (await runtime()).scanForIndex(c, o) } });
     try { if (opts.onReport) opts.onReport(report); } catch { /* the caller's handler */ }
-    if (!report.denied.length) return embedFn(chunks, ...rest);
-    const drop = new Set(report.denied);
+    const held = report.held || [];
+    if (!report.denied.length && !held.length) return embedFn(chunks, ...rest);
+    const drop = new Set([...report.denied, ...held]);
     const kept = list.filter((_, i) => !drop.has(i));
     if (!kept.length) return [];
     return embedFn(single ? kept[0] : kept, ...rest);

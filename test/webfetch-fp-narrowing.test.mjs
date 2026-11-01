@@ -80,20 +80,20 @@ for (const [name, text] of GATE15_FIRES) {
   test(`#15 web gate still fires: ${name}`, () => assert.equal(INBOUND_GATES[15](text), true));
 }
 
-// ---- #1 dlp-payment-card: a card number passes the Luhn checksum ------------------------------------
+// ---- #90 dlp-payment-card: a card number passes the Luhn checksum -----------------------------------
 
-test("#1 card: an RFC bit-position ruler is not a card number", () => {
+test("#90 card: an RFC bit-position ruler is not a card number", () => {
   const ruler = "      0                   1                   2                   3\n      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1\n     +-+-+-+-+-------+-+-------------+";
-  assert.ok(!scanIds(ruler, "prompt").includes(1));
-  assert.ok(!scanIds(ruler, "output").includes(1));
+  assert.ok(!scanIds(ruler, "prompt").includes(90));
+  assert.ok(!scanIds(ruler, "output").includes(90));
 });
-test("#1 card: a Luhn-valid number still fires, grouped, contiguous and letter-spaced", () => {
+test("#90 card: a Luhn-valid number still fires, grouped, contiguous and letter-spaced", () => {
   for (const t of ["card 4111 1111 1111 1111 exp 12/26", "pay with 4111111111111111 today", "card 4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1", "amex 3782-822463-10005"]) {
-    assert.ok(scanIds(t, "prompt").includes(1), t);
+    assert.ok(scanIds(t, "prompt").includes(90), t);
   }
 });
-test("#1 card: a Luhn-invalid 16-digit run does not fire", () => {
-  assert.ok(!scanIds("order ref 1234 5678 9012 3456", "prompt").includes(1));
+test("#90 card: a Luhn-invalid 16-digit run does not fire", () => {
+  assert.ok(!scanIds("order ref 1234 5678 9012 3456", "prompt").includes(90));
 });
 
 // ---- #39 secret-db-conn: a placeholder password is not a credential ---------------------------------

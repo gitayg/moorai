@@ -1,11 +1,11 @@
 {
   "name": "moorai",
   "displayName": "MoorAI",
-  "version": "1.18.4",
+  "version": "1.46.2",
   "description": "AI security at the point. Runtime guardrails for AI agents, apps and APIs; this plugin runs them as Claude Code hooks that scan tool calls, tool results and prompts for secrets, PII, prompt injection and exfiltration before they reach the model or leave the machine. Content-free reporting, no account needed. Requires Node 18+.",
   "author": {
-    "name": "Itay Glick",
-    "url": "https://github.com/gitayg"
+    "name": "MoorAI",
+    "url": "https://moorai.dev"
   },
   "homepage": "https://moorai.dev/",
   "repository": "https://github.com/gitayg/moorai",

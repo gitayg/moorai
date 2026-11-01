@@ -231,7 +231,12 @@ test("CLI --fs-deny lists only protected paths that exist (wxc-exec fails a miss
     const r = b.run(["--agent", "claude", "--workspace", b.ws, "--command", "claude.exe", "--fs-deny"]);
     assert.equal(r.status, 0, r.stderr);
     const denied = JSON.parse(r.stdout).filesystem.deniedPaths;
-    assert.deepEqual(denied, [`${b.home}\\.ssh`]);
+    // The child keeps the runner's real SystemRoot on Windows (node cannot start without it), so the real
+    // C:\Windows\Tasks dirs exist there and are denied too; the builder judged against the same disk agrees.
+    const expected = buildMxcPolicy({ agent: "claude", workspace: b.ws, commandLine: "claude.exe", env: b.env, hookRoots: [], egressAllow: [], captureDenials: false, fsDenySupported: true }, { exists: b.exists });
+    assert.deepEqual(denied, expected.policy.filesystem.deniedPaths);
+    assert.ok(denied.includes(`${b.home}\\.ssh`), "the existing .ssh is denied");
+    for (const d of denied) assert.ok(b.exists(d), `${d} exists`);
   } finally { b.done(); }
 });
 

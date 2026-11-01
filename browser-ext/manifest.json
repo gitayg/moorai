@@ -2,7 +2,15 @@
   "manifest_version": 3,
   "name": "MoorAI Browser Guard",
   "version": "0.1.0",
-  "description": "On-device, content-free prompt guard for browser GenAI (ChatGPT / Claude / Copilot / Gemini / Perplexity / Mistral Le Chat / DeepSeek / Grok). Mirrors MoorAI's agent guardrails: detection runs locally; only a category, risk level, and one-way hash ever leave the browser.",
+  "description": "On-device prompt guard for browser AI apps. Detection runs locally; only a category, risk level and keyed hash can leave.",
+  "homepage_url": "https://moorai.dev",
+  "minimum_chrome_version": "102",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "activeTab",
     "storage"
@@ -22,6 +30,12 @@
   "optional_host_permissions": [
     "https://*/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "storage": {
+    "managed_schema": "managed-schema.json"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -37,6 +51,7 @@
         "https://grok.com/*"
       ],
       "js": [
+        "config.js",
         "content-hash.js",
         "detectors.js",
         "report.js",
@@ -51,6 +66,12 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "MoorAI Browser Guard"
+    "default_title": "MoorAI Browser Guard",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

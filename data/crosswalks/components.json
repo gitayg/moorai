@@ -177,7 +177,7 @@
       "symbol": "S(\"secret-github\""
     },
     "det-pii": {
-      "name": "Personal and payment data detectors (#1, #15)",
+      "name": "Personal and payment data detectors (#1, #15, #90)",
       "path": "data/detectors.js",
       "symbol": "detectorId: \"dlp-payment-card\""
     },
@@ -462,7 +462,7 @@
       "symbol": "export function decideImageInspection"
     },
     "mask": {
-      "name": "Masking a finding in place (Claude Code hook)",
+      "name": "Masking a finding in place (Claude Code hook; tool results at the MCP guard, MCP gateway and model proxy)",
       "path": "cli/mask.mjs",
       "symbol": "export function isMaskable"
     },
@@ -485,6 +485,71 @@
       "name": "Rule base: severity x likelihood per threat",
       "path": "data/threats.json",
       "symbol": "\"riskScore\""
+    },
+    "sampling-scan": {
+      "name": "MCP sampling and elicitation request scan",
+      "path": "mcp-proxy/sampling-scan.mjs",
+      "symbol": "export function gateServerRequest"
+    },
+    "mcp-harvest": {
+      "name": "MCP read budgets per server (mcpHarvest)",
+      "path": "cli/mcp-harvest.mjs",
+      "symbol": "export function assessHarvest"
+    },
+    "mcp-harvest-dump": {
+      "name": "MCP bulk-export query shapes (mcpHarvest dump)",
+      "path": "cli/mcp-harvest.mjs",
+      "symbol": "export function dumpShaped"
+    },
+    "mcp-scope": {
+      "name": "MCP path scope against the server's declared roots (mcpScope)",
+      "path": "cli/mcp-scope.mjs",
+      "symbol": "export function judgeScope"
+    },
+    "mcp-session-reads": {
+      "name": "MCP reads in the session-risk mass read",
+      "path": "cli/session-state.mjs",
+      "symbol": "ev.readKey = h(`mcp:${readId}`)"
+    },
+    "oauth-token": {
+      "name": "MCP gateway OAuth token checks (mcpOAuth: audience, issuer, scope, reuse)",
+      "path": "mcp-gateway/oauth-token.mjs",
+      "symbol": "export function judgeToken"
+    },
+    "oauth-as-check": {
+      "name": "MCP gateway authorization-server metadata check (mcpOAuth.authServer: issuer, HTTPS, PKCE S256)",
+      "path": "mcp-gateway/oauth-as-check.mjs",
+      "symbol": "export async function checkAuthServers"
+    },
+    "pkg-known-bad": {
+      "name": "Known-compromised package releases (shipped + signed knownBadPackages)",
+      "path": "cli/package-known-bad.mjs",
+      "symbol": "export function knownBadShellCheck"
+    },
+    "mcp-package-policy": {
+      "name": "MCP server package policy (mcpPackagePolicy: pins, unpinned, critical checks, known-bad)",
+      "path": "cli/mcp-package-policy.mjs",
+      "symbol": "export function judgeMcpPackage"
+    },
+    "operator-stop": {
+      "name": "Operator stop: an administrator stops an agent session or every agent on a device",
+      "path": "cli/session-stop.mjs",
+      "symbol": "export function stopFor"
+    },
+    "agent-session-identity": {
+      "name": "Agent session identity (moorai-identity): device-key-signed, short-lived session tokens",
+      "path": "cli/agent-session-identity.mjs",
+      "symbol": "export function verifyToken"
+    },
+    "gateway-identity": {
+      "name": "Agent session identity checked at the MCP gateway (agentIdentity, revokedAgentSessions)",
+      "path": "mcp-gateway/identity.mjs",
+      "symbol": "export async function gateIdentity"
+    },
+    "model-proxy-identity": {
+      "name": "Agent session identity checked at the model proxy (agentIdentity, revokedAgentSessions)",
+      "path": "model-proxy/identity.mjs",
+      "symbol": "export function createIdentityGate"
     }
   }
 }

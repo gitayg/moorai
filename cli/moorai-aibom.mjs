@@ -12,11 +12,15 @@
 // names + ports only), INSTALLED local runtimes (existence checks, no execution), on Windows the
 // Windows AI platform (cli/local-ai-windows.mjs — package names + versions, NPU / GPU class), and local
 // models whose NAME says their safety training was removed (cli/local-model-names.mjs — per-runtime
-// counts and a boolean; the names are read in memory and never emitted).
+// counts and a boolean; the names are read in memory and never emitted). Each entry is joined to the
+// on-device records of what was actually USED (cli/aibom-usage.mjs — lastUsed, calls30d, usageStatus),
+// and to the governance the admin declared for it in the signed policy (cli/aibom-declarations.mjs —
+// owner, purpose, dataUse, retention, intendedUsers; entries with none are flagged undeclared).
 //
 //   node cli/moorai-aibom.mjs                 # JSON (default)
 //   node cli/moorai-aibom.mjs --format md     # Markdown for a report
 //   node cli/moorai-aibom.mjs --format csv    # CSV (components)
+//   node cli/moorai-aibom.mjs --unused-days 30   # configured but unused for 30 days: removal candidates
 //   npm run aibom -- --format md
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -30,6 +34,9 @@ import { fixtureRunner, localMcpListeners } from "./aibom-runtime.mjs";
 import { localAiInventory, runCmd } from "./local-ai-inventory.mjs";
 import { localModelSafety, parseOllamaTags, SAFETY_REMOVED_TOKENS } from "./local-model-names.mjs";
 import { assessServerSync } from "./mcp-reputation.mjs";
+import { scanIdeExtensions } from "./ide-extensions.mjs";
+import { annotateUsage, unusedCandidates, byUse, configSurfaces } from "./aibom-usage.mjs";
+import { aibomDeclarations, annotateDeclarations } from "./aibom-declarations.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 const MODEL_SAFETY_TOKENS = SAFETY_REMOVED_TOKENS.map((t) => t.token).join(", ");
@@ -95,10 +102,40 @@ function mcpLevel(caps) { let s = 0; if (caps.net) s += 25; if (caps.fs) s += 25
 // in memory only; the URL is never emitted (its query string can carry a token).
 function mcpServers(decls = []) {
   const seen = new Set(), out = [];
-  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); if (cfg && typeof cfg.url === "string") decls.push({ name, scope, url: cfg.url, type: cfg.type, transport: cfg.transport }); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps), reputation: mcpReputation(cfg || {}) }); } };
+  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); if (cfg && typeof cfg.url === "string") decls.push({ name, scope, url: cfg.url, type: cfg.type, transport: cfg.transport }); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps), reputation: mcpReputation(cfg || {}), watchedBy: configSurfaces(cfg || {}) }); } };
   const claude = readJson(join(HOME, ".claude.json"));
   if (claude) { add(claude.mcpServers, "claude"); if (claude.projects) for (const p of Object.values(claude.projects)) add(p.mcpServers, "claude"); }
   add(readJson(join(HOME, ".cursor", "mcp.json"))?.mcpServers, "cursor");
+  for (const [scope, rel] of HOST_MCP) add(readJson(join(HOME, ...rel))?.mcpServers, scope);
+  return out;
+}
+
+// Agent hosts MoorAI has a hook adapter for but no provider/model setting to read, found by the homes their
+// vendors document (names only; never a file's contents), and their user MCP config files:
+//   antigravity  ~/.gemini/config/ (global hooks.json + mcp_config.json) and ~/.gemini/antigravity{,-cli,-ide}/
+//                (antigravity.google/docs/hooks, /docs/cli/gcli-migration)
+//   windsurf     ~/.codeium/windsurf/ (docs.devin.ai/desktop/cascade/hooks; mcp_config.json there)
+//   kiro         ~/.kiro/ (kiro.dev/docs; ~/.kiro/settings/mcp.json)
+//   cline        ~/.cline/ and ~/Documents/Cline/ (docs.cline.bot/getting-started/config;
+//                ~/.cline/data/settings/cline_mcp_settings.json, as data/skill-surface.js notes)
+const HOST_HOMES = [
+  ["antigravity", [[".gemini", "config"], [".gemini", "antigravity"], [".gemini", "antigravity-cli"], [".gemini", "antigravity-ide"]]],
+  ["windsurf", [[".codeium", "windsurf"]]],
+  ["kiro", [[".kiro"]]],
+  ["cline", [[".cline"], ["Documents", "Cline"]]]
+];
+const HOST_MCP = [
+  ["antigravity", [".gemini", "config", "mcp_config.json"]],
+  ["windsurf", [".codeium", "windsurf", "mcp_config.json"]],
+  ["kiro", [".kiro", "settings", "mcp.json"]],
+  ["cline", [".cline", "data", "settings", "cline_mcp_settings.json"]]
+];
+function agentHosts() {
+  const out = [];
+  for (const [agent, homes] of HOST_HOMES) {
+    const hit = homes.find((rel) => listDir(join(HOME, ...rel)).length > 0);
+    if (hit) out.push({ agent, source: `~/${hit.join("/")}` });
+  }
   return out;
 }
 
@@ -132,6 +169,15 @@ function editorExtensions() {
     }
   }
   return out;
+}
+// Installed IDE extensions (cli/ide-extensions.mjs): every VS Code-family extension and JetBrains plugin,
+// checked for published malicious ids, typosquats, invisible-Unicode code and side-loads. Report-only.
+// The AIBOM keeps the flagged ones and the AI ones; the counts cover all of them.
+function ideScan() {
+  try {
+    const r = scanIdeExtensions({ home: HOME });
+    return { scanned: r.scanned, ai: r.ai, flagged: r.flagged, truncated: r.truncated, extensions: r.extensions.filter((x) => x.ai || x.codes.length) };
+  } catch { return { scanned: 0, ai: 0, flagged: 0, truncated: false, extensions: [], error: "scan-failed" }; }
 }
 function agentSkills() {
   const out = [];
@@ -181,10 +227,25 @@ function modelSafety() {
   return localModelSafety({ platform, home: HOME, ...(ollamaTags ? { ollamaTags } : {}) });
 }
 
-async function buildAibom() {
+// The policy the declarations come from: --policy <file>, else the device's policy as the hook would load
+// it (from its local cache, console unreachable, as moorai-doctor does). → { policy, source }.
+async function declarationPolicy(file) {
+  if (file) return { policy: JSON.parse(readFileSync(file, "utf8")), source: "file" };
+  try {
+    const { loadConfig } = await import("./config.mjs");
+    const { loadPolicyReadOnly } = await import("./doctor-policy.mjs");
+    const r = loadPolicyReadOnly(loadConfig(), { offline: true });
+    if (r && r.policy && typeof r.policy === "object") return { policy: r.policy, source: "device-policy" };
+  } catch { /* no policy on this device */ }
+  return { policy: null, source: "none" };
+}
+
+async function buildAibom(declPolicy = { policy: null, source: "none" }) {
   const decls = [];
   const prov = providers(), local = localModels(), mcp = mcpServers(decls);
-  const ext = editorExtensions(), skills = agentSkills();
+  const ext = editorExtensions(), skills = agentSkills(), hosts = agentHosts();
+  const agents = [...new Set([...prov.map((p) => p.agent), ...hosts.map((h) => h.agent)])];
+  const ides = ideScan();
   const use = usage(prov);
   const keys = scanKeysAtRest().findings;
   const ai = localAi();
@@ -194,28 +255,41 @@ async function buildAibom() {
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
     ...models.map((m) => ({ type: "model", name: m.name, provider: m.provider, local: m.local })),
-    ...[...new Set(prov.map((p) => p.agent))].map((a) => ({ type: "agent", name: a })),
-    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport, reputation: s.reputation })),
+    ...agents.map((a) => ({ type: "agent", name: a })),
+    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, scope: s.scope, riskLevel: s.level, capabilities: s.caps, transport: s.transport, reputation: s.reputation, watchedBy: s.watchedBy })),
     ...ext.map((x) => ({ type: "editor-extension", name: x.id, editor: x.editor, version: x.version })),
     ...skills.map((s) => ({ type: "skill", name: s.name, kind: s.kind }))
   ];
+  const usageEvidence = annotateUsage({ providers: prov, mcpServers: mcp, components }, { home: HOME });
+  const declarations = annotateDeclarations({ components, mcpServers: mcp, apiKeysAtRest: keys }, aibomDeclarations(declPolicy.policy));
+  const observed = components.filter((c) => c.usageStatus !== "not-observable");
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: agents.length, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
       apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length,
       networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length,
-      localModelsSafetyRemovedByName: safety ? safety.count : 0 },
-    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
+      localModelsSafetyRemovedByName: safety ? safety.count : 0,
+      ideExtensionsScanned: ides.scanned, ideExtensionsFlagged: ides.flagged,
+      used: observed.filter((c) => c.usageStatus === "used").length, neverSeen: observed.filter((c) => c.usageStatus === "never-seen").length,
+      usageNotObservable: components.length - observed.length, ...declarations.summary, declarationsSource: declPolicy.source },
+    providers: prov, agentHosts: hosts, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
     apiKeysAtRest: keys, localRuntimes: runtimes, localRuntimesInstalled: ai.installed, ...(ai.windowsAi ? { windowsAi: ai.windowsAi } : {}),
-    localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), components
+    ideExtensionScan: ides, localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), usageEvidence, apiKeyDeclarations: declarations.keys, components
   };
 }
 
 // ---- renderers ----
+function useLabel(m) {
+  const by = m.watchedBy && m.watchedBy.length ? ` (${m.watchedBy.join(", ")})` : "";
+  if (m.usageStatus === "used") return `used · last ${m.lastUsed}${m.calls30d != null ? ` · ${m.calls30d} calls/30 d` : ""}${by}`;
+  return m.usageStatus === "never-seen" ? `never seen${by}` : "not observable (no MoorAI hook, guard or gateway on it)";
+}
+const cell = (v) => (v == null || v === "" ? "—" : String(v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|"));
 function toMarkdown(d) {
   const cap = (c) => [c.net && "net", c.fs && "fs", c.cred && "cred"].filter(Boolean).join(" · ") || "—";
   const rep = (r) => r ? `${r.score}/100 ${r.band}${r.reasons.length ? ` (${r.reasons.join(", ")})` : ""}` : "—";
   const s = d.summary;
+  const ev = d.usageEvidence;
   return `# MoorAI — AI Bill of Materials\n\n`
     + `**Device:** ${d.device}  ·  **Generated:** ${d.generatedAt}  ·  **Scope:** this device only\n\n`
     + `Content-free inventory — asset names and counts only. No tokens, prompts, or file contents.\n\n`
@@ -224,8 +298,8 @@ function toMarkdown(d) {
     + `## AI providers & models\n\n| Provider | Agent | Model | Source |\n|---|---|---|---|\n`
     + (d.providers.map((p) => `| ${p.provider} | ${p.agent} | ${p.model || "—"} | ${p.source} |`).join("\n") || "| — | — | — | — |")
     + (d.localModels.length ? `\n\n## Local models\n\n| Runtime | Model |\n|---|---|\n` + d.localModels.map((m) => `| ${m.runtime} | ${m.name} |`).join("\n") : "")
-    + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk | Reputation |\n|---|---|---|---|---|---|\n`
-    + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} | ${rep(m.reputation)} |`).join("\n") || "| — | — | — | — | — | — |")
+    + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk | Reputation | Use |\n|---|---|---|---|---|---|---|\n`
+    + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} | ${rep(m.reputation)} | ${useLabel(m)} |`).join("\n") || "| — | — | — | — | — | — | — |")
     + (d.apiKeysAtRest.length ? `\n\n## AI provider keys at rest (keyed hash only — never the key)\n\n| Provider | Location class | Location | Key hash |\n|---|---|---|---|\n` + d.apiKeysAtRest.map((k) => `| ${k.provider} | ${k.locationClass} | ${k.location || "(project .env — path withheld)"} | ${k.keyHash} |`).join("\n") : "")
     + (d.localRuntimes.length ? `\n\n## Running local model servers\n\n| Runtime | Ports | Bind | Detected by |\n|---|---|---|---|\n` + d.localRuntimes.map((r) => `| ${r.runtime} | ${r.ports.join(", ") || "—"} | ${r.bind} | ${r.detectedBy.join(" + ")} |`).join("\n") : "")
     + (d.localRuntimesInstalled.length ? `\n\n## Installed local model runtimes\n\n| Runtime | Found via | Version |\n|---|---|---|\n` + d.localRuntimesInstalled.map((r) => `| ${r.runtime} | ${r.via.join(", ")} | ${r.version || "—"} |`).join("\n") : "")
@@ -241,7 +315,18 @@ function toMarkdown(d) {
         + (d.localModelSafety.truncated || d.localModelSafety.timedOut ? `\n\nPartial: the scan hit its ${d.localModelSafety.timedOut ? "time" : "entry"} bound.` : "") : "")
     + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
+    + (d.ideExtensionScan && d.ideExtensionScan.scanned ? `\n\n## IDE extension scan\n\n${d.ideExtensionScan.scanned} installed extensions scanned, ${d.ideExtensionScan.flagged} flagged, ${d.ideExtensionScan.ai} AI. Report-only.${d.ideExtensionScan.truncated ? " Partial: a read bound was hit." : ""}\n\n| Editor | Extension | Version | AI | Findings | Risk |\n|---|---|---|---|---|---|\n` + (d.ideExtensionScan.extensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} | ${x.ai ? "yes" : "no"} | ${x.codes.join(", ") || "—"}${x.advisories ? ` (${x.advisories.join(", ")})` : ""} | ${x.risk} |`).join("\n") || "| — | — | — | — | — | — |") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
+    + `\n\n## Installed vs used (last ${ev.windowDays} days)\n\n`
+    + `${s.used} used, ${s.neverSeen} never seen, ${s.usageNotObservable} not observable. MCP records start ${ev.mcpServers.since || "— (none)"}; model records start ${ev.models.since || "— (none)"}. `
+    + `Not observable means no MoorAI record covers that kind of asset here — it is not the same as unused. MCP servers: the Use column above.\n\n`
+    + `| Type | Name | Use | Last used | Calls (${ev.windowDays} d) |\n|---|---|---|---|---|\n`
+    + (d.components.filter((c) => c.usageStatus !== "not-observable" && c.type !== "mcp-server").map((c) => `| ${c.type} | ${c.name} | ${c.usageStatus} | ${c.lastUsed || "—"} | ${c.calls30d ?? "not counted"} |`).join("\n") || "| — | — | — | — | — |")
+    + `\n\n## Declared governance (policy aibomDeclarations)\n\n`
+    + `${s.declared} declared, ${s.undeclared} undeclared, ${s.notDeclarable} with no console item to declare them under; ${s.declarationsDropped} invalid policy entries dropped. Source: ${s.declarationsSource}.\n\n`
+    + `| Type | Name | Declaration | Key | Owner | Purpose | Data use | Retention | Intended users |\n|---|---|---|---|---|---|---|---|---|\n`
+    + ([...d.components.filter((c) => c.declarationStatus !== "not-declarable"), ...d.apiKeyDeclarations.map((k) => ({ ...k, type: "key", name: k.declarationKey.split(":")[1] }))]
+        .map((c) => `| ${c.type} | ${cell(c.name)} | ${c.declarationStatus} | ${cell(c.declarationKey)} | ${cell(c.declared?.owner)} | ${cell(c.declared?.purpose)} | ${cell(c.declared?.dataUse)} | ${cell(c.declared?.retention)} | ${cell(c.declared?.intendedUsers)} |`).join("\n") || "| — | — | — | — | — | — | — | — | — |")
     + (d.usage ? `\n\n## Usage & cost signal (OWASP LLM10 — content-free)\n\n`
         + `**${d.usage.events}** guarded agent calls`
         + (d.usage.window.from ? `  ·  ${d.usage.window.from.slice(0, 10)} → ${d.usage.window.to.slice(0, 10)}` : "")
@@ -255,18 +340,57 @@ function toCsv(d) {
   return ["type,name,detail", ...d.components.map((c) => {
     const detail = c.type === "model" ? `${c.provider || ""}${c.local ? " (local)" : ""}`
       : c.type === "mcp-server" ? `risk=${c.riskLevel}; caps=${["net", "fs", "cred"].filter((k) => c.capabilities?.[k]).join("|") || "none"}${c.reputation ? `; reputation=${c.reputation.score}/${c.reputation.band}` : ""}` : "";
-    return [c.type, c.name, detail].map(q).join(",");
+    const use = `usageStatus=${c.usageStatus}${c.lastUsed ? `; lastUsed=${c.lastUsed}` : ""}${c.calls30d != null ? `; calls30d=${c.calls30d}` : ""}`;
+    return [c.type, c.name, detail ? `${detail}; ${use}` : use].map(q).join(",");
   })].join("\n") + "\n";
 }
 
 const HELP = `MoorAI AIBOM — content-free AI Bill of Materials for this machine.
 
 Usage:
-  moorai-aibom [--format json|md|csv|cyclonedx|spdx]   (default: json)
+  moorai-aibom [--format json|md|csv|cyclonedx|spdx] [--sort used|unused] [--policy <file>]   (default: json)
+  moorai-aibom --unused-days <N> [--format json|md]
   moorai-aibom --help
 
   cyclonedx  emit a valid CycloneDX 1.6 JSON SBOM (content-free)
   spdx       emit a valid SPDX 2.3 JSON document (content-free)
+  --sort used     order components and MCP servers most used first (calls in 30 days, then last use);
+  --sort unused   least used first. Entries whose use is not observable go last either way.
+  --unused-days N list the MCP servers, models and agent hosts configured here but not used in the last
+                  N days (1-3650), each with a short reason: removal candidates. An entry never seen is
+                  listed only when MoorAI's record for its kind reaches back N days; otherwise it is
+                  "undecided". Entries whose use is not observable are never listed.
+
+Installed vs used. Every component (and every MCP server entry) carries lastUsed (YYYY-MM-DD, UTC, or
+null), calls30d (calls in the last 30 days, or null when MoorAI does not count that kind) and
+usageStatus: used | never-seen | not-observable. Read from local records only, names counts and dates:
+  ~/.moorai/destinations.jsonl, ~/.moorai/mcp-usage.json   MCP calls seen by the hook, the stdio guard
+                                                   and the gateway; per server and UTC day the largest
+                                                   count one surface recorded (never their sum)
+  An MCP server entry is observable only when something watches it (watchedBy): the MoorAI hook
+  registered in the host whose config declares it (hook:<host>), a launch through the stdio guard
+  (guard), or a URL on the gateway at 127.0.0.1:8848 (gateway). Otherwise it is not-observable.
+  ~/.moorai/token-usage-transcript.json            requests per model from Claude Code's transcripts
+                                                   (enrolled devices); the configured Claude Code model only
+  agent hosts' session stores (newest mtime only)  lastUsed for claude, codex, antigravity, windsurf,
+                                                   cline; calls30d null
+  Editor extensions, skills, local models and other agents' models are not observable.
+  CycloneDX: properties moorai:usageStatus, moorai:lastUsed, moorai:calls30d. SPDX: the package comment.
+
+Declared governance (signed policy aibomDeclarations: admin-entered, never agent content). Keyed
+"<kind>:<name>": agent:<claude-code|codex|...>, mcp:<server label>, key:<provider>:<h2: hash>,
+model:<model id as listed here>; value { owner, purpose, dataUse, retention, intendedUsers } (strings,
+at most 254 / 200 / 200 / 100 / 200 characters, no control characters). Every component and MCP
+server entry carries declarationStatus: declared | undeclared | not-declarable (editor extensions,
+skills, and agents or MCP names the console has no item for), declarationKey (the key it is declared
+under) and, when declared, declared { ... }; keys at rest get the same in apiKeyDeclarations, one row
+per key. Invalid policy entries are dropped and counted (summary.declarationsDropped). Read from the
+device's policy as the hook loads it (local cache, no network), or from --policy <file>
+(summary.declarationsSource: device-policy | file | none).
+  CycloneDX: a model's purpose and intendedUsers go in modelCard.considerations.useCases / .users; every
+  other field in properties moorai:declaration, moorai:declaration:key, moorai:declaration:<field>; the
+  counts in metadata.properties moorai:declarations:*. Keys at rest are not CycloneDX components.
+  SPDX: declaration=<status> in the package comment.
 
 What it reads (configuration metadata ONLY — never a token value, never a prompt,
 never the contents of any credential file):
@@ -275,9 +399,19 @@ never the contents of any credential file):
   ~/.aider.conf.yml                                model for Aider
   ~/.claude.json                                   configured MCP servers (global + per-project)
   ~/.cursor/mcp.json                               configured MCP servers for Cursor
+  ~/.gemini/config/mcp_config.json, ~/.codeium/windsurf/mcp_config.json, ~/.kiro/settings/mcp.json,
+  ~/.cline/data/settings/cline_mcp_settings.json   configured MCP servers for Antigravity, Windsurf, Kiro, Cline
+  ~/.gemini/config, ~/.gemini/antigravity*, ~/.codeium/windsurf, ~/.kiro, ~/.cline, ~/Documents/Cline
+                                                   agent hosts present (directory listing only)
   ~/.ollama/models/manifests/.../library/          local Ollama model names (directory listing)
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
+  IDE extension scan (cli/ide-extensions.mjs, report-only): ~/.vscode, ~/.vscode-insiders, ~/.vscode-server,
+  ~/.vscode-oss, ~/.cursor, ~/.windsurf, ~/.kiro extensions (package.json, extensions.json install source,
+  bundled .js/.cjs/.mjs read in memory for invisible-Unicode runs, bounded) and JetBrains plugin dirs
+  (META-INF/plugin.xml inside the plugin jar). Emits editor, id, version, AI flag, finding codes, risk and
+  advisory ids: ide-ext-known-malicious, ide-ext-invisible-code, ide-ext-typosquat,
+  ide-ext-publisher-impersonation, ide-ext-sideloaded. Never a path or file contents.
   ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
   ~/.moorai/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
 
@@ -337,13 +471,44 @@ reads an environment-variable VALUE and never opens a secret. Output is asset
 names, counts, and risk levels. Nothing leaves the machine.
 `;
 
+function unusedMarkdown(r, d) {
+  const row = (x) => `| ${x.type} | ${x.name}${x.scopes ? ` (${x.scopes.join(", ")})` : ""} | ${x.lastUsed || "—"} | ${x.reason} |`;
+  return `# MoorAI — configured but unused for ${r.unusedDays} day(s)\n\n**Device:** ${d.device}  ·  **Generated:** ${d.generatedAt}\n\n`
+    + `Removal candidates: configured on this device, no use on record for ${r.unusedDays} day(s). Names and dates only.\n\n`
+    + `| Type | Name | Last used | Reason |\n|---|---|---|---|\n` + (r.candidates.map(row).join("\n") || "| — | — | — | — |")
+    + (r.undecided.length ? `\n\n## Undecided — MoorAI has not watched long enough\n\n| Type | Name | Last used | Reason |\n|---|---|---|---|\n` + r.undecided.map(row).join("\n") : "")
+    + `\n\nEntries whose use MoorAI cannot observe are not listed (${d.summary.usageNotObservable}).\n`;
+}
+
 if (process.argv.includes("--help") || process.argv.includes("-h")) { process.stdout.write(HELP); process.exit(0); }
 
-const fmt = (process.argv.includes("--format") ? process.argv[process.argv.indexOf("--format") + 1] : "json");
-const bom = await buildAibom();
-const out = fmt === "md" ? toMarkdown(bom)
-  : fmt === "csv" ? toCsv(bom)
-  : fmt === "cyclonedx" ? JSON.stringify(toCycloneDX(bom), null, 2) + "\n"
-  : fmt === "spdx" ? JSON.stringify(toSpdx(bom), null, 2) + "\n"
-  : JSON.stringify(bom, null, 2) + "\n";
-process.stdout.write(out);
+const argOf = (f) => (process.argv.includes(f) ? process.argv[process.argv.indexOf(f) + 1] : undefined);
+const fmt = argOf("--format") ?? "json";
+const sort = argOf("--sort");
+const unusedArg = argOf("--unused-days");
+const unusedDays = /^\d{1,4}$/.test(unusedArg || "") ? Number(unusedArg) : NaN;
+const policyArg = argOf("--policy");
+if (process.argv.includes("--sort") && sort !== "used" && sort !== "unused") {
+  process.stderr.write("moorai-aibom: --sort takes used or unused\n"); process.exitCode = 2;
+} else if (process.argv.includes("--unused-days") && !(unusedDays >= 1 && unusedDays <= 3650)) {
+  process.stderr.write("moorai-aibom: --unused-days takes a whole number of days, 1-3650\n"); process.exitCode = 2;
+} else if (process.argv.includes("--policy") && !policyArg) {
+  process.stderr.write("moorai-aibom: --policy takes a JSON file\n"); process.exitCode = 2;
+} else {
+  let declPolicy;
+  try { declPolicy = await declarationPolicy(policyArg); } catch (e) { process.stderr.write(`moorai-aibom: --policy ${policyArg}: ${e.message}\n`); process.exit(2); }
+  const bom = await buildAibom(declPolicy);
+  if (sort) { const cmp = byUse(sort === "used" ? 1 : -1); bom.components.sort(cmp); bom.mcpServers.sort(cmp); }
+  let out;
+  if (process.argv.includes("--unused-days")) {
+    const r = { generatedAt: bom.generatedAt, device: bom.device, ...unusedCandidates(bom, unusedDays, bom.usageEvidence), usageEvidence: bom.usageEvidence };
+    out = fmt === "md" ? unusedMarkdown(r, bom) : JSON.stringify(r, null, 2) + "\n";
+  } else {
+    out = fmt === "md" ? toMarkdown(bom)
+      : fmt === "csv" ? toCsv(bom)
+      : fmt === "cyclonedx" ? JSON.stringify(toCycloneDX(bom), null, 2) + "\n"
+      : fmt === "spdx" ? JSON.stringify(toSpdx(bom), null, 2) + "\n"
+      : JSON.stringify(bom, null, 2) + "\n";
+  }
+  process.stdout.write(out);
+}

@@ -31,12 +31,12 @@ export function explainText(engine, policy, text, stage, { ctx, coach = false, a
     threatId: threat.id,
     threat: threat.threat,
     category: threat.category,
-    severity: calibrateRisk(threat.riskLevel, { stage, category: threat.category }),
+    severity: calibrateRisk(threat.riskLevel, { stage, threatId: threat.id }),
     riskScore: threat.riskScore,
     ...(showMatch && match != null ? { match: engine._clip(String(match)) } : {})
   });
   for (const det of engine.detectors) {
-    if (!engine._inStage(det, want)) continue;
+    if (!engine._runs(det, want, ctx)) continue;
     const raw = firstRaw(engine, det, text);
     if (!raw) continue;
     const threat = engine.threat(det.threatId);

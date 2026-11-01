@@ -6,7 +6,8 @@
 //
 //   always, offline   the package NAME against the known-malicious / popular-library list
 //                     (data/popular-packages.js, via nameFindings) and the popular MCP server list
-//                     (data/popular-mcp-servers.js); an unpinned `npx -y pkg`; a local / docker / remote /
+//                     (data/popular-mcp-servers.js); an unpinned `npx -y pkg` (no exact version: none, a
+//                     dist-tag or a range); a local / docker / remote /
 //                     unresolvable launch. Nothing is fetched.
 //   always, offline   the INSTALLED copy npx already put on disk (~/.npm/_npx/*/node_modules/<name>) is
 //                     read with the same package heuristics and scoped engine scan SkillTriage runs
@@ -21,7 +22,12 @@
 //                     provenance, else the repository's own manifest on github.com / gitlab.com):
 //                     repo-missing, repo-unreachable, repo-mismatch. Public package and repo names only.
 //                     And cli/mcp-package/maintainers.mjs counts who can publish (npm packument
-//                     `maintainers`, PyPI `ownership.roles`): single-maintainer. Counted, never kept.
+//                     `maintainers`, PyPI `ownership.roles`): single-maintainer. The count (never a
+//                     name) is kept per package@version with a TTL in mcp-pkg.json for the device
+//                     report (cli/mcp-package/pkg-report.mjs), and refreshed here once it expires.
+//   signed catalogue  the MoorAI MCP catalogue (cli/mcp-catalogue.mjs), used only after its ed25519
+//                     signature verifies; the top-level policy key mcpCatalogue { url, publicKeys } is
+//                     handed in as opts.catalogue. Adds do-not-install / review / caution; never raises a score.
 //   OPT-IN feed       policy.mcpReputation.feed = true (or an https URL): SkillTriage's published
 //                     verdicts, downloaded WHOLE with a bare GET and matched here. The request names no
 //                     server, so the feed host learns only that a MoorAI device fetched the feed.
@@ -34,7 +40,8 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, lstatS
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveLaunch } from "./mcp-package/resolve.mjs";
+import { resolveLaunch, unwrapGuard } from "./mcp-package/resolve.mjs";
+import { EXACT_SEMVER } from "./mcp-package/check-spec.mjs";
 import { nameFindings, packageHeuristics } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 import { analyzePackage } from "./mcp-package.mjs";
@@ -44,6 +51,8 @@ import { buildEngine } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { isOffline } from "./mcp-package/endpoints.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
+import { readCatalogue, refreshCatalogue, catalogueSignals } from "./mcp-catalogue.mjs";
+import { derivePkg, recordPkgMeta, readPkgMeta, maintainersChecked, scanOfReputation } from "./mcp-package/pkg-report.mjs";
 
 export const DEFAULT_FEED_URL = "https://skilltriage.moorai.dev/api/reputation-feed.json";
 export const CACHE_FILE = "mcp-reputation.json";
@@ -70,14 +79,6 @@ const sha = (s) => createHash("sha256").update(String(s)).digest("hex").slice(0,
 
 // ---- identity ----------------------------------------------------------------------------------
 
-// A server already wrapped by `mcp-proxy/install.mjs` is `node …/moorai-mcp-guard.mjs [--server x] -- real…`.
-function unwrapGuard(argv) {
-  const i = argv.findIndex((a) => /moorai-mcp-guard\.mjs$/.test(String(a)));
-  if (i < 0) return argv;
-  const sep = argv.indexOf("--", i);
-  return sep >= 0 ? argv.slice(sep + 1) : argv;
-}
-
 function remoteKey(url) {
   try { const u = new URL(url); return `remote:${sha(u.protocol + "//" + u.host + u.pathname)}`; } catch { return `remote:${sha("invalid")}`; }
 }
@@ -90,7 +91,10 @@ export function serverIdentity(decl) {
   if (!argv.length) return { kind: "unknown", key: `unknown:${sha("")}`, ref: null };
   const ref = resolveLaunch(argv);
   if (ref.ecosystem === "npm" || ref.ecosystem === "pypi") {
-    return { kind: ref.ecosystem, key: `${ref.ecosystem}:${String(ref.name).toLowerCase()}`, ref, pinned: !!ref.version };
+    // Pinned = an exact version, the same rule as the device report's pkg.pinned: npm `latest`, `^1.4`,
+    // `~1.4` resolve at launch. PyPI's parser only yields a version for == / @ <literal>, i.e. exact.
+    const pinned = ref.ecosystem === "npm" ? !!ref.version && EXACT_SEMVER.test(ref.version) : !!ref.version;
+    return { kind: ref.ecosystem, key: `${ref.ecosystem}:${String(ref.name).toLowerCase()}`, ref, pinned };
   }
   if (ref.ecosystem === "local") return { kind: "local", key: `local:${sha(ref.path)}`, ref, entry: ref.path };
   if (ref.ecosystem === "docker") return { kind: "docker", key: `docker:${sha(ref.name)}`, ref };
@@ -207,7 +211,17 @@ async function registryLookup(id, opts) {
     if (n.id === "registry-http-404" && !(id.kind === "npm" && String(id.ref.name).startsWith("@"))) signals.push(signal("name-not-published"));
   }
   evidence.push(e.analysed ? "registry-analysed" : "registry-not-analysed");
-  return { signals, evidence };
+  return { signals, evidence, maintainers: maint.info || { count: null } };
+}
+
+// The device report's pkg cache (cli/mcp-package/pkg-report.mjs): the scan verdict whenever this server's
+// package code was read, and the maintainer count from a registry lookup. Local only; never throws.
+function notePkg(decl, stateDir, now, { rep = null, maintainers = null } = {}) {
+  try {
+    const scan = rep ? scanOfReputation(rep) : null;
+    if (!scan && !maintainers) return;
+    recordPkgMeta(stateDir, derivePkg(decl), { ...(scan ? { scan } : {}), ...(maintainers ? { maintainers } : {}) }, now || Date.now());
+  } catch { /* evidence only */ }
 }
 
 // ---- opt-in SkillTriage feed ----------------------------------------------------------------------
@@ -302,14 +316,24 @@ function saveCache(stateDir, cache) {
   writeAtomic(join(stateDir, CACHE_FILE), cache);
 }
 
-function present(id, entry, feed, flags) {
+// The verified catalogue's signals; a catalogue that is present but does not verify is named in evidence.
+function catalogueFor(id, version, cat) {
+  if (!cat || cat.status === "absent" || cat.status === "disabled") return { signals: [], evidence: [] };
+  if (cat.status === "expired" && cat.expiredDeny) return { signals: catalogueSignals(cat.expiredDeny, id, version).signals, evidence: ["catalogue-expired"] };
+  if (cat.status !== "ok") return { signals: [], evidence: [`catalogue-${cat.status}`] };
+  const c = catalogueSignals(cat.catalogue, id, version);
+  return { signals: c.signals, evidence: ["catalogue-verified", ...c.evidence] };
+}
+
+function present(id, entry, feed, flags, cat) {
   const f = feedSignals(feed, id, entry.version);
+  const c = catalogueFor(id, entry.version, cat);
   const lookup = entry.lookup || { signals: [], evidence: [] };
   const tools = (entry.tools || []).map((c) => signal(c));
-  const r = scoreReputation([...entry.base, ...lookup.signals, ...f.signals, ...tools]);
+  const r = scoreReputation([...entry.base, ...lookup.signals, ...f.signals, ...c.signals, ...tools]);
   return {
     key: id.key, kind: id.kind, versionHash: entry.ver, ...r,
-    evidence: [...new Set([...entry.evidence, ...lookup.evidence, ...f.evidence])].sort(),
+    evidence: [...new Set([...entry.evidence, ...lookup.evidence, ...f.evidence, ...c.evidence])].sort(),
     scoredAt: entry.scoredAt, firstSeenAt: entry.firstSeenAt, ...flags
   };
 }
@@ -343,7 +367,9 @@ export function assessServerSync(decl, opts = {}) {
   const r = core(decl, opts, null);
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return present(r.id, r.entry, f ? f.feed : null, r.flags);
+  const rep = present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }));
+  notePkg(decl, stateDir, opts.now, { rep });
+  return rep;
 }
 
 // The proxy / hook path. Network only when the org policy opts in (lookup and/or feed).
@@ -353,18 +379,29 @@ export async function assessServer(decl, opts = {}) {
   let r = core(decl, opts, null);
   // MOORAI_OFFLINE=1: the opt-in lookup is skipped (and not cached, so it runs once the device is online).
   const offlineSkip = r.needLookup && isOffline();
+  let maintainers = null;
   if (r.needLookup && !offlineSkip) {
     let lookup;
-    try { lookup = await registryLookup(r.id, opts); } catch { lookup = { signals: [], evidence: ["registry-not-analysed"] }; }
+    try { ({ maintainers, ...lookup } = await registryLookup(r.id, opts)); } catch { lookup = { signals: [], evidence: ["registry-not-analysed"] }; }
     const flags = r.flags;
     r = core(decl, opts, lookup);
     r.flags = flags;
+  } else if (policy.lookup === "registry" && (r.id.kind === "npm" || r.id.kind === "pypi") && !isOffline()
+    && !maintainersChecked(derivePkg(decl), readPkgMeta(stateDir), opts.now || Date.now())) {
+    // The lookup itself is cached per version; the count it keeps expires. Refresh only the count: one
+    // registry metadata request, on this opt-in proxy path (the hook never looks anything up).
+    const m = await checkMaintainers(r.id.ref, { fetchImpl: opts.fetchImpl || globalThis.fetch }).catch(() => null);
+    maintainers = (m && m.info) || { count: null };
   }
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const url = feedUrl(policy);
   const feed = url ? await refreshFeed(url, opts, stateDir) : (readFeedFile(stateDir) || {}).feed || null;
-  const rep = present(r.id, r.entry, feed, r.flags);
+  const cat = opts.catalogue && typeof opts.catalogue === "object" && opts.catalogue.url
+    ? await refreshCatalogue({ stateDir, policy: opts.catalogue, fetchImpl: opts.fetchImpl, now: opts.now }).catch(() => readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }))
+    : readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now });
+  const rep = present(r.id, r.entry, feed, r.flags, cat);
   if (offlineSkip) rep.evidence = [...rep.evidence, "registry-not-checked-offline"].sort();
+  notePkg(decl, stateDir, opts.now, { rep, maintainers });
   return rep;
 }
 
@@ -379,7 +416,7 @@ export function addToolSignals(decl, findings, opts = {}) {
   r.entry.tools = [...have].sort();
   if (changed || !r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags), changed };
+  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now })), changed };
 }
 
 // ---- config lookup: a hook sees `mcp__<server>__<tool>`, i.e. only the label ----------------------
@@ -426,16 +463,16 @@ export function findServerDecl(name, { home = homedir(), cwd = process.cwd() } =
 // is the proxy's job; a feed the proxy already downloaded is still matched here.
 // → null | { action: "allow"|"alert"|"block"|"coach", rep, report, alert }
 //   report = first sight or a version change (post `alert` then; later calls stay quiet).
-export function hookReputation(label, { policy = {}, enforce = false, home = homedir(), cwd = process.cwd(), stateDir = STATE_DIR, identityHash = null } = {}) {
+export function hookReputation(label, { policy = {}, enforce = false, home = homedir(), cwd = process.cwd(), stateDir = STATE_DIR, identityHash = null, catalogue = null } = {}) {
   const p = policy && typeof policy === "object" ? policy : {};
   if (p.enabled === false) return null;
   const decl = findServerDecl(label, { home, cwd });
   if (!decl) return null;
-  const rep = assessServerSync(decl, { home, stateDir });
+  const rep = assessServerSync(decl, { home, stateDir, catalogue });
   const action = reputationAction(rep, p, { enforce });
   const report = (rep.firstSeen || rep.versionChanged) && action !== "allow";
   const alert = reputationAlert(rep, { server: label, decision: action, identityHash: identityHash ? identityHash(`mcp-reputation:${rep.key}`) : "", tool: `hook:mcp__${label}` });
-  return { action, rep, report, alert };
+  return { action, rep, report, alert, decl };
 }
 
 export { REP_REV };

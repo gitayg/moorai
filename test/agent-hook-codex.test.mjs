@@ -144,9 +144,16 @@ test("toClaude: mapping table", () => {
   const t = toClaude({ ...FIXTURE, tool_name: "spawn_agent", tool_input: { message: "go", agent_type: "worker" } });
   assert.deepEqual([t.tool_name, t.tool_input], ["Task", { prompt: "go", subagent_type: "worker" }]);
   const m = toClaude({ ...FIXTURE, cwd: "/w", tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Update File: b.txt\n@@ fn\n ctx\n-old\n+new\n*** Delete File: c.txt\n*** End Patch" } });
-  assert.deepEqual(m.tool_input, { file_path: "/w/a.txt", edits: [{ old_string: "", new_string: "x" }, { old_string: "ctx\nold", new_string: "ctx\nnew" }] });
-  assert.equal(m.tool_name, "MultiEdit");
-  assert.equal(toClaude({ ...FIXTURE, tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Delete File: c.txt\n*** End Patch" } }), null);
+  // One call per touched path: every file gets the path checks a direct write gets, not only the first.
+  assert.deepEqual(m.map((c) => [c.tool_name, c.tool_input]), [
+    ["Write", { file_path: "/w/a.txt", content: "x" }],
+    ["MultiEdit", { file_path: "/w/b.txt", edits: [{ old_string: "ctx\nold", new_string: "ctx\nnew" }] }],
+    ["Write", { file_path: "/w/c.txt", content: "" }]
+  ]);
+  const del = toClaude({ ...FIXTURE, cwd: "/w", tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Delete File: c.txt\n*** End Patch" } });
+  assert.deepEqual([del.tool_name, del.tool_input], ["Write", { file_path: "/w/c.txt", content: "" }], "a deleted file is path-checked");
+  const mv = toClaude({ ...FIXTURE, cwd: "/w", tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Update File: a\n*** Move to: b\n@@\n-1\n+2\n*** End Patch" } });
+  assert.deepEqual(mv.map((c) => c.tool_input.file_path), ["/w/b", "/w/a"], "a move checks its destination and its source");
   assert.equal(parsePatch("*** Begin Patch\n*** Update File: a\n*** Move to: b\n@@\n-1\n+2\n*** End Patch")[0].moveTo, "b");
 });
 

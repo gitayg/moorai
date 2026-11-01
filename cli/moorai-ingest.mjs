@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// moorai-ingest — replay your past agent sessions (Claude Code and Codex transcripts on this machine)
+// moorai-ingest — replay your past agent sessions (Claude Code, Codex and Gemini CLI transcripts on this machine)
 // through the live hook's decision functions, so a new install shows on day one what MoorAI would have
 // flagged and what enforce mode would have blocked. The transcript-side twin of moorai-backtest, which
 // replays only the content-free action-audit log and therefore cannot score detectors.
@@ -8,6 +8,7 @@
 //   node cli/moorai-ingest.mjs --discover --policy candidate.json --json
 //   node cli/moorai-ingest.mjs ~/.claude/projects/<project> --agent claude-code --coverage
 //   node cli/moorai-ingest.mjs --discover --report
+//   node cli/moorai-ingest.mjs --discover --format quarry --out ./traces
 //
 // Exit code: 0 after a run (whatever it found), 2 on a usage error.
 import { readFileSync } from "node:fs";
@@ -21,13 +22,14 @@ import { runIngest, DEFAULT_BOUNDS } from "./ingest/run.mjs";
 import { NO_POLICY_BASELINE } from "./ingest/replay.mjs";
 import { toText, threatName } from "./ingest/summary.mjs";
 import { postAlerts } from "./ingest/report.mjs";
+import { createQuarryExport, statsText, QUARRY_PIN, TEXT_CAP } from "./ingest/quarry.mjs";
 
 const roots = defaultRoots();
 export const HELP = `moorai-ingest — what MoorAI would have flagged in your past agent sessions.
 
 Usage:
   moorai-ingest --discover [options]
-  moorai-ingest <file-or-dir>... --agent claude-code|codex [options]
+  moorai-ingest <file-or-dir>... --agent claude-code|codex|gemini [options]
 
 Reads the transcripts your agents already keep on this machine and replays every recorded tool call,
 tool result and prompt through the same decision functions the live MoorAI hook uses, under the policy
@@ -38,10 +40,13 @@ Transcripts read:
                 (<project>/<session>.jsonl and <session>/subagents/*.jsonl; $CLAUDE_CONFIG_DIR moves it)
   codex         ${roots.codex.join(", ")}
                 (rollout-*.jsonl and rollout-*.jsonl.zst; $CODEX_HOME moves it)
+  gemini        ${roots.gemini.join(", ")}
+                (Gemini CLI: <project_hash>/chats/session-*.jsonl, legacy session-*.json, and sub-agent
+                sessions in chats/<session>/)
 
 Options:
   --discover            find transcripts in the locations above
-  --agent NAME          agent of the explicit paths: claude-code | codex
+  --agent NAME          agent of the explicit paths: claude-code | codex | gemini
   --policy FILE         candidate policy JSON (the shape /api/policy returns); default: the policy in force
   --days N              only transcripts modified in the last N days (default 30; 0 = any age)
   --max-files N         newest N transcript files (default ${DEFAULT_BOUNDS.maxFiles})
@@ -50,18 +55,32 @@ Options:
   --max-line-bytes N    skip (and count) any line longer than N bytes (default ${DEFAULT_BOUNDS.maxLineBytes})
   --max-seconds N       stop after N seconds (default ${DEFAULT_BOUNDS.maxSeconds})
   --coverage            list sessions that ran other hooks but not MoorAI's (Claude Code only; Codex
-                        does not record hook runs in its transcript, so its sessions show as unknown)
+                        and Gemini CLI do not record hook runs in their transcripts, so their sessions
+                        show as unknown)
   --json                machine-readable summary
   --show-local          also print each finding WITH its content (prompt, command, path, matched text)
                         to this terminal; refused unless stdout is a terminal
   --report              send content-free alerts for the findings to your MoorAI console, marked
                         replayed: true with the original timestamp (enrolled devices only)
+  --format quarry       instead of the summary, write each transcript file as a scan input for Cisco's
+                        Project Quarry (Apache-2.0; alpha format, pinned to Quarry ${QUARRY_PIN.version}, commit
+                        ${QUARRY_PIN.commit}): one JSON object per line on stdout, or one file per session with --out
+  --content free|full   with --format quarry. free (default): no prompt, file, code, argument or result
+                        text; each call keeps its tool name and order, and its arguments hold only MoorAI's
+                        facts (moorai_tags, moorai_decision, moorai_threats, ...), so only order and tag
+                        rules work. full: the transcript text too (each text cut to ${TEXT_CAP} bytes), for
+                        text rules; written only on this device
+  --out DIR             with --format quarry: write <agent>-<keyed hash of the session id>.json files
+                        (mode 0600) to DIR instead of stdout
 
 Privacy guarantees:
-  * Everything runs on this machine. Transcripts are read, never copied, written or uploaded.
+  * Everything runs on this machine. Transcripts are read, never copied or uploaded; only --format quarry
+    writes a trace of them, and only to this machine.
   * The default output is content-free: counts by threat, agent and decision, sessions affected and
     threat names. No prompt, command, path, URL, matched text or session id is printed.
   * --show-local is the only way to see content, and it writes only to an interactive terminal.
+  * --format quarry writes traces only on this device (a file in --out, or stdout) and cannot be combined
+    with --report. Its default level (--content free) carries no transcript text.
   * Nothing is sent anywhere unless you pass --report. Even then each alert carries only the threat id,
     category, risk level, stage, tool name (for an MCP tool its server and tool name, as the live hook
     sends), original timestamp, the same keyed one-way fingerprints the live hook sends (contentHash,
@@ -91,12 +110,21 @@ export function parseArgs(argv) {
     }
     if (a === "--agent") { o.agent = argv[++i]; continue; }
     if (a === "--policy") { o.policy = argv[++i]; if (!o.policy) throw new Error("--policy needs a file"); continue; }
+    if (a === "--format" || a === "--content" || a === "--out") { o[a.slice(2)] = argv[++i]; if (!o[a.slice(2)]) throw new Error(`${a} needs a value`); continue; }
     if (a.startsWith("-")) throw new Error(`unknown option ${a}`);
     o.paths.push(a);
   }
   if (o.flags.has("--help") || o.flags.has("-h")) return o;
   if (!o.flags.has("--discover") && !o.paths.length) throw new Error("pass --discover or a transcript path with --agent");
   if (o.paths.length && !AGENTS.includes(o.agent)) throw new Error(`--agent must be one of ${AGENTS.join(", ")} for an explicit path`);
+  if (o.format !== undefined && o.format !== "quarry") throw new Error("--format must be quarry");
+  if (o.format !== "quarry" && (o.content !== undefined || o.out !== undefined)) throw new Error("--content and --out need --format quarry");
+  if (o.format === "quarry") {
+    if (o.flags.has("--report")) throw new Error("--report cannot be combined with --format quarry: a Quarry trace stays on this device and is never sent");
+    for (const f of ["--json", "--show-local", "--coverage"]) if (o.flags.has(f)) throw new Error(`${f} cannot be combined with --format quarry, which writes traces instead of the summary`);
+    o.content ??= "free";
+    if (o.content !== "free" && o.content !== "full") throw new Error("--content must be free or full");
+  }
   return o;
 }
 
@@ -141,6 +169,17 @@ async function main(argv) {
     policySource = loaded && loaded.policy ? loaded.source : "builtin";
   }
   const policyId = policyIdOf(policy, { builtin: NO_POLICY_BASELINE });
+  if (o.format === "quarry") {
+    if (o.content === "full") process.stderr.write(`moorai-ingest: --content full: the Quarry traces contain transcript content (prompts, commands, file text, results), written only to ${o.out || "stdout"} on this device\n`);
+    const q = createQuarryExport({ content: o.content, out: o.out || null });
+    await runIngest({
+      policy, policyId, policySource, days: o.days ?? 30, bounds: o.bounds,
+      explicit: o.paths.length ? o.paths.map((path) => ({ path, agent: o.agent })) : null,
+      config, observer: q.observer
+    });
+    process.stderr.write(statsText(q.stats, { content: o.content, out: o.out }));
+    return 0;
+  }
   const report = o.flags.has("--report");
   const { result, alerts, local, sessions } = await runIngest({
     policy, policyId, policySource, days: o.days ?? 30, bounds: o.bounds,

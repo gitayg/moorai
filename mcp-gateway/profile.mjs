@@ -12,7 +12,10 @@
 //
 // Drift kinds here are "tool" and "mcpServer" only (C5). The hook's third kind, "host", is read out of
 // MCP arguments; the gateway does not evaluate it (host extraction is switched off), so no argument-
-// derived item can reach a gateway alert.
+// derived item can reach a drift alert. The call's arguments do go to the egress rules
+// (cli/egress-rules.mjs egressTargets, F23): every destination they name is judged as the hook judges the
+// same mcp__ call, and an egress alert carries the destination's binary, host, port and method only, never
+// a path, a query or an argument.
 import { evaluateProfile, rejectedAlert } from "../cli/workload-profile.mjs";
 import { readRootOwned } from "../cli/hook-core.mjs";
 import { systemConfigPath } from "../cli/server-mode.mjs";
@@ -32,9 +35,9 @@ export const gatewayToolName = (server, tool) => `mcp__${server}__${tool}`;
 
 // → { decision: "allow"|"deny", reason, alerts, rejectedAlert, coach? } — never throws (evaluateProfile is
 // fail-open and so is this).
-export function profileCheck({ policy, server, tool, serviceId, coach, cwd = process.cwd(), system = systemConfig(), deps = {} }) {
+export function profileCheck({ policy, server, tool, args = {}, serviceId, coach, cwd = process.cwd(), system = systemConfig(), deps = {} }) {
   try {
-    const r = evaluateProfile({ policy, system, serviceId, cwd, tool: gatewayToolName(server, tool), toolInput: {}, coach, deps: { extractHosts: NO_HOSTS, ...deps } });
+    const r = evaluateProfile({ policy, system, serviceId, cwd, tool: gatewayToolName(server, tool), toolInput: args && typeof args === "object" ? args : {}, coach, deps: { extractHosts: NO_HOSTS, ...deps } });
     return { ...r, rejectedAlert: rejectedAlert(r.rejected) };
   } catch {
     return { decision: "allow", reason: "", alerts: [], rejectedAlert: null };

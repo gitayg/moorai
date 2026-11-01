@@ -18,7 +18,7 @@
 
 import { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join, basename } from "node:path";
-import { isSecretCategory } from "./hook-core.mjs";
+import { isSecretThreat } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { stampRecord } from "./record-chain.mjs";
 
@@ -131,10 +131,10 @@ export function pruneByAge(file, days = RETENTION_DAYS) {
   } catch { /* retention is best-effort */ }
 }
 
-// #5 — record only credential/secret-class exposures. `entry` is already content-free
-// (category, riskLevel, stage, tool, contentHash, identity, ts). Non-secret findings are ignored.
+// #5 — record only credential/secret-class exposures (hook-core.mjs SECRET_THREATS, by threatId). `entry` is
+// already content-free (threatId, category, riskLevel, stage, tool, contentHash, identity, ts). Others are ignored.
 export function recordExposure(entry) {
-  if (!entry || !isSecretCategory(entry.category)) return;
+  if (!entry || !isSecretThreat(entry.threatId)) return;
   append(LEDGER, entry);
   pruneByAge(LEDGER);
 }

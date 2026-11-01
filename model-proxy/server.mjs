@@ -13,7 +13,8 @@
 // any other placeholder use is refused before the body is read, and every response is masked for the bound
 // secrets (credential-mask.mjs) before anything reads it. Without them, nothing here changes.
 //
-// Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI), POST …/models/{model}:generateContent
+// Only POST …/messages (Anthropic), POST …/chat/completions, …/responses and …/embeddings (OpenAI;
+// openai-responses.mjs, openai-embeddings.mjs), POST …/models/{model}:generateContent
 // / :streamGenerateContent (Gemini, on any route) and POST …/api/chat / …/api/generate (Ollama's native API,
 // on any route; NDJSON streams) are parsed; any other path or method is forwarded unparsed.
 //
@@ -28,7 +29,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, createHmac, randomBytes } from "node:crypto";
 import { createMoorAI, resolveSettings } from "../packages/agent-sdk/src/runtime.mjs";
 import { createTracer, applyTraceHeaders, cleanModel } from "./trace-w3c.mjs";
 import { createTrail } from "./trail.mjs";
@@ -36,11 +37,13 @@ import { REASON } from "../cli/provenance.mjs";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
+import * as openaiResponses from "./openai-responses.mjs";
+import * as openaiEmbeddings from "./openai-embeddings.mjs";
 import * as gemini from "./gemini.mjs";
 import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createLineSplitter } from "./ndjson.mjs";
-import { strictBytes, PROBLEM_TEXT } from "./json-strict.mjs";
+import { strictBytes, strictScan, PROBLEM_TEXT } from "./json-strict.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage, REQUEST } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
@@ -51,6 +54,22 @@ import { resolveFailMode } from "../cli/fail-mode.mjs";
 import { systemConfig } from "../cli/server-mode.mjs";
 import { operatorContextMode } from "./context.mjs";
 import { createDecoyCheck, decoyAlert, DECOY_REFUSAL } from "./decoy.mjs";
+import { createUsageMeter, FLUSH_MS as USAGE_FLUSH_MS } from "./token-usage.mjs";
+import { budgetBlock, budgetErrorBody, budgetAlert } from "./budget.mjs";
+import { createIntent, loadIntentKey } from "./intent.mjs";
+import { responseScanMode, responseDetectors, createEcho, createScanner } from "./response-scan.mjs";
+import { createTextGuard, guardBody } from "./text-guard.mjs";
+import { parseLossless } from "./json-lossless.mjs";
+import { createResultMasker } from "./result-mask.mjs";
+import { maskAlert } from "../cli/result-mask.mjs";
+import { textAlert, textRefusal } from "./text-report.mjs";
+import * as codecs from "./text-codecs.mjs";
+import { fileParts, batchFileParts, mergeFileParts } from "./file-parts.mjs";
+import { fileScanPolicy } from "../cli/file-scan-policy.mjs";
+import { loadFileScanKeys } from "../cli/file-scan-keys.mjs";
+import { createFileScanner, fileScanDecision, fileScanAlert, mimeClass, PROVIDER_LABEL } from "../cli/file-scan.mjs";
+import { headlessAskMode } from "../cli/server-mode.mjs";
+import { createIdentityGate } from "./identity.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -72,7 +91,9 @@ export const TOKEN_HEADER = "x-moorai-proxy-token";
 // The agent session a request belongs to, as Claude Code states it to its model endpoint (measured, Claude
 // Code 2.1.295: the same id as its hooks' session_id). Read for the trace id only; forwarded as sent.
 export const SESSION_HEADER = "x-claude-code-session-id";
-export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
+// X-MoorAI-Session-Id names the session for intent alignment (intent.mjs); it is addressed to this proxy and
+// is not sent upstream.
+export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-session-id", "x-moorai-agent-identity"]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // Report-only work runs after the response is complete, so a scan (≈10 ms for 2 KB, measured) never
@@ -112,9 +133,38 @@ function originOk(origin, allow) {
   try { const u = new URL(origin); return (u.protocol === "http:" || u.protocol === "https:") && isLoopback(u.hostname); } catch { return false; }
 }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
+const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : /\/responses$/.test(path) ? openaiResponses : /\/embeddings$/.test(path) ? openaiEmbeddings : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
 // The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
-const busy = (api) => (api === openai || api === gemini || api === ollama ? 503 : 529);
+// Endpoints that carry files outside the parsed APIs, with policy fileScan on: Anthropic Message Batches and Gemini
+// cachedContents are read and scanned like their model requests; the Files / uploads APIs (Anthropic and OpenAI
+// /files, OpenAI /uploads and their parts, Gemini's /upload/… media uploads) and Gemini batch generation are not
+// read, so they are refused in enforce mode or under a closed fail mode and alerted otherwise.
+// With fileScan on, the path is normalised before it is matched and forwarded (normalPath): percent-encoded
+// unreserved characters decoded, dot segments resolved, duplicate slashes collapsed, a trailing slash removed. It is
+// matched (matchPath) with %2F / %5C also read as "/", case-insensitively (the endpoint patterns carry the i flag,
+// and the parsed-API choice is tried as sent and in lower case), since a provider may route either way; the
+// normalised, case-kept path is what goes upstream.
+const UNRESERVED_PCT = /%(?:4[1-9A-Fa-f]|5[0-9Aa]|6[1-9A-Fa-f]|7[0-9Aa]|3[0-9]|2[DdEe]|5[Ff]|7[Ee])/g;
+export function normalPath(p) {
+  const decoded = String(p).replace(UNRESERVED_PCT, (m) => String.fromCharCode(parseInt(m.slice(1), 16)));
+  const out = [];
+  for (const seg of decoded.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { out.pop(); continue; }
+    out.push(seg);
+  }
+  return `/${out.join("/")}`;
+}
+export const matchPath = (p) => normalPath(String(p).replace(/%2f|%5c/gi, "/").replace(/\\/g, "/"));
+const UPLOAD_PATHS = [/^(?:\/v1(?:beta)?)?\/files$/i, /^(?:\/v1)?\/uploads(?:\/[^/]+\/parts)?$/i, /^\/upload\//i, /:batchGenerateContent$/i];
+function fileEndpoint(method, path) {
+  if (method === "POST" && /\/messages\/batches$/i.test(path)) return { kind: "anthropic-batch", api: anthropic };
+  if (method === "POST" && /\/messages\/count_tokens$/i.test(path)) return { kind: "anthropic", api: anthropic };
+  if (method === "POST" && /\/cachedContents$/i.test(path)) return { kind: "gemini", api: gemini };
+  if ((method === "POST" || method === "PUT" || method === "PATCH") && UPLOAD_PATHS.some((re) => re.test(path))) return { kind: "upload", api: null };
+  return null;
+}
+const busy = (api) => (api && api !== anthropic ? 503 : 529);
 // A response (body, SSE event data, NDJSON line) that is not strict JSON has no one reading (json-strict.mjs):
 // enforce does not forward it; report mode forwards it and reports it.
 const strictMessage = (p) => `MoorAI model-proxy: the response ${PROBLEM_TEXT[p]}, so a client could read it differently than it was checked; it was not forwarded`;
@@ -133,6 +183,10 @@ function largeNumbers() {
 const PROVIDER_OF = { anthropic: "anthropic", openai: "openai", gemini: "google", ollama: "ollama" };
 const PROVIDER_OF_ROUTE = { "/anthropic": "anthropic", "/openai": "openai", "/gemini": "google", "/ollama": "ollama" };
 const providerOf = (api, prefix) => (api && PROVIDER_OF[api.NAME]) || PROVIDER_OF_ROUTE[prefix] || "other";
+// Each parsed API's name for intent alignment (user-turns.mjs) and its reply-text codec (text-codecs.mjs).
+// Embeddings have neither: no tool call and no reply text.
+const KIND = new Map([[anthropic, "anthropic"], [openai, "openai-chat"], [openaiResponses, "openai-responses"], [gemini, "gemini"], [ollama, "ollama"]]);
+const CODEC = new Map([[anthropic, codecs.anthropic], [openai, codecs.openaiChat], [openaiResponses, codecs.openaiResponses], [gemini, codecs.gemini], [ollama, codecs.ollama]]);
 // The request's model: Gemini names it in the path (…/models/{model}:generateContent), the others in the body.
 function modelOf(api, rest, json) {
   if (api === gemini) { let p = rest; try { p = decodeURIComponent(rest); } catch { /* as sent */ } const m = /\/(?:models|tunedModels|endpoints)\/([^/]+):[A-Za-z]+$/.exec(p); return cleanModel(m && m[1]); }
@@ -149,14 +203,18 @@ function errorPayload(api, status, message) {
 export async function createProxy(opts = {}) {
   const o = { ...DEFAULTS, ...opts, routes: opts.routes || defaultRoutes(opts.host || DEFAULTS.host) };
   const enforce = o.mode === "enforce";
+  // An unsettled ask has no approver behind this proxy: in enforce mode it would be forwarded as if allowed.
+  if (enforce && o.headlessAsk === "pass-through") throw new Error("model-proxy: headlessAsk pass-through is not accepted in --mode enforce (use deny or allow-with-report)");
   // --denied-tool-call replace: a denied tool call is withheld and its turn delivered as text explaining
   // why (anthropic-replace.mjs, openai-replace.mjs) instead of the whole response being refused.
   const replace = enforce && o.deniedToolCall === "replace";
   // Report-only passes an "ask" through unsettled (nothing is enforced, so nothing is settled); enforce
   // applies server mode's headless rule: an ask with no approver is a deny unless a trusted source says
-  // allow-with-report.
-  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy" });
+  // allow-with-report. intentStore false: the runtime's own intent step is off, since this proxy judges intent
+  // with its own sessions (intent.mjs) and runtime.toolCall carries none (every risky call would be task-unknown).
+  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy", intentStore: false });
   await rt.ready();
+  const identityGate = createIdentityGate(rt, { enforce });
   wrapReporter(rt, { enforce });
   const consoleConfig = resolveSettings({ console: o.console }, { env: o.env || process.env, system: o.systemConfig }).config;
   const tracer = createTracer({ tenantKey: consoleConfig.installToken, agentName: rt.identity.agentName });
@@ -181,6 +239,127 @@ export async function createProxy(opts = {}) {
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   // The allow trail (trail.mjs): one record per forwarded model request, when the signed policy turns it on.
   const trail = createTrail(rt, { config: consoleConfig, appVersion: version });
+  // Token usage (token-usage.mjs): each parsed response's provider usage, cumulative hourly buckets, POST /api/token-usage.
+  const usage = createUsageMeter({ config: consoleConfig, identity: rt.identity, enrolled: rt.config.enrolled, fetch: o.fetch, flushMs: o.usageFlushMs ?? USAGE_FLUSH_MS });
+  // Usage budgets (budget.mjs): one alert per budget and period from this process.
+  const budgetSeen = new Set();
+  const reportBudget = (s, hit) => { const k = `${hit.budgetId}|${hit.periodStart}`; if (budgetSeen.has(k) || budgetSeen.size > 256) return; budgetSeen.add(k); try { rt.reporter.post(budgetAlert(hit, enforce, rt.hash), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } }); } catch { /* report-only */ } };
+  // Intent alignment (intent.mjs): the store is data/intent-server.mjs unless a test injects one (opts.intentLib);
+  // the key is opts.intentKey (tests), --intent-key-file, or random per process.
+  const intentLib = o.intentLib || await import("../data/intent-server.mjs");
+  const intent = createIntent({ lib: intentLib, key: loadIntentKey({ key: o.intentKey, keyFile: o.intentKeyFile }).key, rt, enforce, now: o.intentNow });
+  // Response text scanning (response-scan.mjs): the system-prompt shingle key, random per process.
+  const echoKey = randomBytes(32);
+  // A payment card (#90) or personal data (#15) in the reply is a value from a small space (a card is 10^16
+  // candidates less the Luhn check, a phone number 10^10): its contentHash is not the tenant-keyed hash, which
+  // anyone holding the install token could enumerate back to the value, but an HMAC under a key random to this
+  // process ("proc:" and 16 hex). The same value seen twice by this process hashes alike; nothing outside it —
+  // the console, another proxy, a restart — can link or reverse it. A secret (#39, high entropy) and a
+  // system-prompt echo (#52, a keyed shingle) keep the tenant-keyed hash, so the console can correlate them.
+  const piiKey = randomBytes(32);
+  const LOW_ENTROPY = new Set([1, 15, 90]);
+  const findingHash = (id, match) => (LOW_ENTROPY.has(id) ? `proc:${createHmac("sha256", piiKey).update(String(match), "utf8").digest("hex").slice(0, 16)}` : rt.hash(match));
+  // Cloud file scanning (cli/file-scan.mjs, policy fileScan): every inline file, document or image part of a
+  // request (file-parts.mjs) looked up — or, in "upload" mode, uploaded — at the policy's provider before the
+  // request goes upstream. The keys come only from the root-owned admin binding, a root-owned key file
+  // (--file-scan-key-file) or this process's environment (cli/file-scan-keys.mjs); opts.fileScanKeys is an
+  // embedder's own (tests). opts.fileScanEndpoints / fileScanFetch / fileScanPollMs: test seams.
+  const fileScanner = createFileScanner({
+    keys: { ...loadFileScanKeys({ admin, keyFiles: o.fileScanKeyFiles || {}, env: o.env || process.env }).keys, ...(o.fileScanKeys || {}) },
+    endpoints: o.fileScanEndpoints || {}, fetch: o.fileScanFetch || globalThis.fetch, pollMs: o.fileScanPollMs ?? 1000
+  });
+  const fileAlerted = new Set();
+  // Scans one request's files. Returns the refusal text when the request must not go upstream — enforce: any
+  // file whose decision is deny; report: only a fail-closed one (what cannot be judged, as for text) — else
+  // null. One content-free alert per file, verdict and decision per process (a conversation re-sends its files).
+  async function scanFiles(found, cfg, s, fm) {
+    const headless = headlessAskMode({ active: true, headless: rt.settings.headless || {} }, s.policy).mode;
+    const jobs = found.parts.map((p) => fileScanner.scan(p.bytes, cfg).then((r) => ({ p, r })));
+    const results = await Promise.all(jobs);
+    // Data that fails strict base64 (file-parts.mjs): not scanned, never clean. Its alert's keyed hash is of the
+    // raw text (no bytes exist that the provider would agree on).
+    // A file sent by reference (a URL or a provider file id): its content is not in the request; unknown, so an
+    // alert and onUnknown. The keyed hash is of the reference; the reference itself never leaves.
+    for (const x of found.refs || []) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "unknown", why: "reference", provider: cfg.provider, sha256: `ref:${createHash("sha256").update(x.ref).digest("hex")}`, uploaded: false } });
+    for (const u of found.unscannable) results.push({ p: { mediaType: u.mediaType, bytes: { length: u.raw.length } }, r: { verdict: "error", why: "unscannable", provider: cfg.provider, sha256: `raw:${createHash("sha256").update(u.raw).digest("hex")}`, uploaded: false } });
+    if (found.over) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "error", why: "budget", provider: cfg.provider, sha256: `over-cap:${found.over}`, uploaded: false } });
+    let refusal = null;
+    for (const { p, r } of results) {
+      const d = fileScanDecision(r, cfg, { failMode: fm, headless });
+      if (d.alert) {
+        const k = `${r.sha256}|${r.verdict}|${d.decision}|${d.failClosed}`;
+        if (!fileAlerted.has(k)) {
+          if (fileAlerted.size >= 4096) fileAlerted.clear();
+          fileAlerted.add(k);
+          try { rt.reporter.post(fileScanAlert({ result: r, cfg, decision: d, hash: rt.hash, tool: "model-proxy:file-scan", mime: p.mediaType, size: p.bytes.length }), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } }); } catch { /* report-only */ }
+        }
+      }
+      if (refusal || d.action !== "deny" || !(enforce || d.failClosed)) continue;
+      const label = PROVIDER_LABEL[r.provider] || r.provider;
+      const what = r.verdict === "malicious" ? `malicious file (${label}: ${r.detections ?? 0} of ${r.engines ?? 0} engines${r.threat ? `, ${r.threat}` : ""})`
+        : d.failClosed ? `not scanned (${r.why}), and your organization blocks what MoorAI cannot evaluate`
+        : `${r.why === "reference" ? "sent by reference (a URL or a file id the scan cannot read)" : r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; ${d.headlessAsk ? "it needs an approval and this server has no approver" : "your organization blocks files the scan cannot vouch for"}`;
+      refusal = `MoorAI model-proxy refused this request — file (${mimeClass(p.mediaType)}): ${what}`;
+    }
+    return refusal;
+  }
+  // Enforce mode: the tool results a request carries, with a masked threat (#39 by default) replaced before the
+  // body goes upstream (result-mask.mjs). A body with a content coding is forwarded as sent. → { body | null, deny }
+  // (deny: a mask that did not verify for a threat whose action without the mask is block).
+  const resultMasker = createResultMasker({ hash: rt.hash });
+  function maskResults(kind, req, body, s) {
+    const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    const exact = !coding || coding === "identity" ? parseLossless(body) : null;
+    if (!exact || typeof exact !== "object" || Array.isArray(exact)) return { body: null, deny: null };
+    const r = resultMasker.mask(kind, exact, { engine: s.engine, policy: s.policy, policyId: s.policyId });
+    for (const m of r.masked) if (m.fresh) rt.reporter.post(maskAlert({ tool: `model-proxy:${kind}`, stage: "output", ids: m.ids, count: m.count }), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } });
+    const f = r.failed.find((x) => x.fallback.decision === "deny");
+    return { body: r.changed ? Buffer.from(JSON.stringify(exact)) : null, deny: f ? { decision: "deny", denied: [{ kind: "tool_result", reasons: f.fallback.reasons }] } : null };
+  }
+  const refuseFile = (res, errApi, message) => { stats.refused++; send(res, 403, errorPayload(errApi, 403, `MoorAI model-proxy refused this request — ${message}`), { "x-moorai-model-proxy": "refused" }); return true; };
+  // The cloud file scan of one request body (policy fileScan on). kind: a file-parts.mjs API kind, or
+  // "anthropic-batch". ref.body is replaced by the body to forward. Returns true when the request was refused.
+  //   * A body that carries a content coding, or is not a JSON object, cannot be read for files: refused in enforce
+  //     mode or under a closed fail mode, otherwise forwarded with an UNEVALUATED_BAD_INPUT alert.
+  //   * Read from the lossless parse (json-lossless.mjs), and the body forwarded is always that object re-serialised,
+  //     file or not, so the upstream receives exactly what was scanned. A body that repeats a key, or has keys that
+  //     differ only in case (Go's encoding/json, Ollama's, folds them), is a parser differential: refused in enforce
+  //     mode or under a closed fail mode, otherwise forwarded re-serialised with an UNEVALUATED_BAD_INPUT alert.
+  //   * Two spellings of one field with different content (file-parts.mjs): the same rule.
+  //   * The files: before the upstream when enforcing or under a closed fail mode, else after the response.
+  //   * Every body is also walked whole for any API's file shapes (file-parts.mjs kind "any"), whatever the path; kind
+  //     "any" alone for a path no parser knows (where a top-level JSON array is accepted).
+  async function fileScanRequest(kind, errApi, req, res, ref, s, fm, later, cfg, label = "file-scan-body") {
+    const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    // On a path no parser knows, the body is read as JSON only when its Content-Type says so (application/json or
+    // application/*+json): the upstream reads it by its declared type, so a JSON-looking multipart or text body is
+    // unscannable. The Content-Type checked is the one forwarded (headers go upstream as sent).
+    const jsonType = kind !== "any" || /^application\/(?:[a-z0-9.!#$&^_-]+\+)?json[ \t]*(?:;|$)/i.test(String(req.headers["content-type"] || "").trim());
+    const exact = jsonType && (!coding || coding === "identity") ? parseLossless(ref.body) : null;
+    if (!exact || typeof exact !== "object" || (Array.isArray(exact) && kind !== "any")) {
+      unevaluated(label, "request", "input");
+      return (enforce || fm === "closed") && refuseFile(res, errApi, "the request body could not be read for files (multipart, binary, a content coding, or not a JSON object), so it is not scanned and cannot be checked");
+    }
+    const sc = strictScan(ref.body.toString("utf8"));
+    const dupe = ["duplicate-key", "key-collision"].find((p) => sc.problems.has(p));
+    if (dupe) {
+      unevaluated(`file-scan-${dupe}`, "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, errApi, `the request body ${PROBLEM_TEXT[dupe]} (duplicate keys are a parser differential), so the provider could read a file the scan never saw`);
+    }
+    ref.body = Buffer.from(JSON.stringify(exact));
+    const found = mergeFileParts(kind === "anthropic-batch" ? batchFileParts(exact) : kind === "any" ? {} : fileParts(kind, exact), fileParts("any", exact));
+    if (found.ambiguous.length) {
+      unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, errApi, `a file part is ambiguous (${found.ambiguous[0].replace(/[^A-Za-z0-9:_]/g, "_")} spelled two ways with different content), so the provider could read a different file than the one checked`);
+    }
+    if (!(found.parts.length || found.over || found.unscannable.length || found.refs.length)) return false;
+    if (!(enforce || fm === "closed")) { later.push(() => scanFiles(found, cfg, s, fm)); return false; }
+    const why = await scanFiles(found, cfg, s, fm);
+    if (!why) return false;
+    stats.refused++;
+    send(res, 403, errorPayload(errApi, 403, why), { "x-moorai-model-proxy": "refused" });
+    return true;
+  }
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -261,13 +440,36 @@ export async function createProxy(opts = {}) {
   const withTimeout = (p) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("evaluation timeout")), o.timeoutMs); })]).finally(() => clearTimeout(t)); };
 
   // Response side ----------------------------------------------------------------------------------------
-  async function onResponse(ur, res, api, held, later, fm) {
+  // The reply-text scan for one response (response-scan.mjs): mode report unless --mode enforce and the policy
+  // says mask / block. Findings are posted as they are made, deduplicated per response (class + keyed hash),
+  // at most 32; in block mode the first one sets `blocked`.
+  function textScan(api, rctx, current) {
+    const codec = CODEC.get(api);
+    if (!codec || !rctx) return null;
+    const mode = enforce ? rctx.mode : "report";
+    const seen = new Set();
+    const t = { codec, mode, hold: mode !== "report", blocked: null, scanner: null };
+    t.scanner = createScanner({ dets: rctx.dets, policy: rctx.policy, echo: rctx.echo, hold: t.hold, onFind: ({ id, match, sent }) => {
+      const h = findingHash(id, match);
+      const k = `${id}:${h}`;
+      if (seen.has(k) || seen.size >= 32) return;
+      seen.add(k);
+      if (mode === "block" && !t.blocked) t.blocked = id;
+      REQUEST.run(current, () => { try { rt.reporter.post(textAlert({ id, hash: h, sent, mode, configured: rctx.mode, enforce, riskLevel: rctx.risk(id) }), { prov: { policyId: rctx.policyId, policySource: rctx.source, event: "PostToolUse" } }); } catch { /* report-only */ } });
+    } });
+    return t;
+  }
+
+  async function onResponse(ur, res, api, held, later, fm, meter, ictx, rctx) {
     const ct = String(ur.headers["content-type"] || "");
     const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
     const ok = ur.statusCode >= 200 && ur.statusCode < 300;
     const sse = /^text\/event-stream\b/i.test(ct);
     // Ollama streams NDJSON (application/x-ndjson): framed by lines instead of SSE events.
     const lines = Boolean(api && api.NDJSON) && /^application\/x-ndjson\b/i.test(ct);
+    // The provider accepted the request: its user turns become the task (intent.mjs), before any tool call in
+    // this response is judged. A rejected request adds nothing.
+    if (ok && ictx) intent.commit(ictx);
     if (!api || !ok) { res.writeHead(ur.statusCode, responseHeaders(ur)); ur.pipe(res); return; }
     if (enc !== "identity") {
       // Unscannable. Report-only forwards it (and says so once); enforce does not forward what it cannot read.
@@ -282,13 +484,16 @@ export async function createProxy(opts = {}) {
     // An engine error or the evaluation budget run out: refused (closed: the caller answers it), or, under an
     // open fail mode, reported unevaluated and released.
     const unjudged = (e) => { if (fm !== "open") throw e; unevaluated("evaluation", "response", "error"); return ALLOW; };
+    // Intent alignment for each call (intent.mjs), when this request has a session to judge against.
+    const copts = ictx ? { intent: (tool, input, findings, name, verdict) => intent.judge(ictx, tool, input, findings, name, verdict), bound: (name, input, verdict) => intent.judgeBound(ictx, name, input, verdict) } : {};
     const decide = enforce
-      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls))).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
-      : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs)); } return Promise.resolve(ALLOW); };
+      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls), copts)).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
+      : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs, copts)); } return Promise.resolve(ALLOW); };
+    const text = textScan(api, rctx, REQUEST.getStore());
     // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
     // after the response has ended, in every mode.
     const observe = (items) => { if (items.length) later.push(() => checker.observe(items)); };
-    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums) : streamObserve(ur, res, api, decide, lines, observe, nums);
+    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums, meter, text, fm) : streamObserve(ur, res, api, decide, lines, observe, nums, meter, text);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
       res.writeHead(ur.statusCode, responseHeaders(ur));
@@ -298,11 +503,13 @@ export async function createProxy(opts = {}) {
         if (over) return;
         const all = Buffer.concat(chunks);
         const body = parseJson(all);
+        if (body && meter) meter.body(body);
         if (body) {
           const sc = strictBytes(all), bad = sc.problem;
           nums.note(sc);
           if (bad) unevaluated(`response-${bad}`, "response", "input");
           decide(api.responseToolCalls(body)); if (api.responseItems) observe(api.responseItems(body));
+          if (text) later.push(() => { guardBody(text.codec, text.scanner, body, false); });
         }
         else unevaluated("response-unparsed", "response");
       });
@@ -325,6 +532,7 @@ export async function createProxy(opts = {}) {
     }
     const buf = Buffer.concat(chunks);
     const body = parseJson(buf);
+    if (body && meter) meter.body(body);
     // A 2xx body on a parsed path that is neither an event stream nor a JSON object (a local server that
     // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
@@ -338,43 +546,78 @@ export async function createProxy(opts = {}) {
     if (api.responseItems) observe(api.responseItems(body));
     let v;
     try { v = await decide(calls); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
-    if (v.decision === "deny") {
-      if (!replace) return refuse(res, api, v, "response");
-      stats.replaced++;
-      const out = Buffer.from(JSON.stringify(api.replaceResponse(body, v)));
-      res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": out.length, "x-moorai-model-proxy": "replaced" });
+    if (v.decision === "deny" && !replace) return refuse(res, api, v, "response");
+    // A body the reply-text scan may rewrite is re-parsed keeping each number's source text (json-lossless.mjs),
+    // so re-serializing it never rounds an integer past 2^53 in a function call's arguments beside the text.
+    const sent = v.decision === "deny" ? api.replaceResponse(body, v) : text && text.hold ? (parseLossless(buf) || body) : body;
+    if (v.decision === "deny") stats.replaced++;
+    // The reply text (response-scan.mjs): report mode after the response; mask / block before it is sent.
+    let masked = false;
+    if (text && !text.hold) later.push(() => { guardBody(text.codec, text.scanner, sent, false); });
+    else if (text) {
+      try { masked = guardBody(text.codec, text.scanner, sent, true); } catch {
+        unevaluated("response-text", "response", "error");
+        if (fm !== "open") return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the reply text could not be scanned; it was not forwarded"), NO_RETRY);
+      }
+      if (text.blocked) { stats.refused++; return send(res, 403, api.errorBody(403, textRefusal(text.blocked)), { "x-moorai-model-proxy": "refused" }); }
+    }
+    if (v.decision === "deny" || masked) {
+      const out = Buffer.from(JSON.stringify(sent));
+      res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": out.length, "x-moorai-model-proxy": v.decision === "deny" ? "replaced" : "masked" });
       return res.end(out);
     }
     res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": buf.length });
     res.end(buf);
   }
 
-  async function streamObserve(ur, res, api, decide, lines, observe, nums) {
+  async function streamObserve(ur, res, api, decide, lines, observe, nums, meter, text) {
     res.writeHead(ur.statusCode, responseHeaders(ur));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent, observe });
+    // The reply text, report-only: a copy of each event's text goes through the rolling window; nothing is held.
+    const guard = text ? createTextGuard({ codec: text.codec, scanner: text.scanner, lines, hold: false }) : null;
+    const tap = (f) => { if (!guard) return; try { f(); } catch { unevaluated("response-text", "response", "error"); } };
     let stopped = false;
-    const feed = (evs) => { for (const ev of evs) { const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); } };
+    const feed = (evs) => { for (const ev of evs) { if (meter) meter.event(ev); const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); tap(() => guard.event(ev.raw)); } };
     ur.on("data", (c) => { if (stopped) return; feed(split.push(c)); if (split.overflow) { stopped = true; unevaluated("stream-event", "response"); } });
-    ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); });
+    ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); tap(() => guard.end()); });
     ur.pipe(res);
   }
 
-  async function streamEnforce(ur, res, api, decide, lines, observe, nums) {
+  async function streamEnforce(ur, res, api, decide, lines, observe, nums, meter, text, fm) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent, observe }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent, observe });
     const write = async (bufs) => { for (const b of bufs) if (!res.write(b)) await Promise.race([once(res, "drain"), once(res, "close")]); };
     const stop = async (status, message) => { stats.refused++; ur.destroy(); res.end(api.streamError(status, message)); };
+    // The reply text (text-guard.mjs) on what the tool-call machine releases: mask / block hold and rewrite it
+    // before it is written; report reads it after the bytes are written. A scan error is reported unevaluated;
+    // in mask / block mode under a closed fail mode it stops the stream.
+    const guard = text ? createTextGuard({ codec: text.codec, scanner: text.scanner, lines, hold: text.hold }) : null;
+    const guarded = async (f, bufs) => {
+      if (!guard) return bufs;
+      if (!text.hold) { await write(bufs); try { f(); } catch { unevaluated("response-text", "response", "error"); } return []; }
+      let out;
+      try { out = f(); } catch {
+        unevaluated("response-text", "response", "error");
+        if (fm !== "open") { await stop(502, "MoorAI model-proxy: the reply text could not be scanned; the stream was stopped"); return null; }
+        out = bufs;
+      }
+      if (text.blocked) { await stop(403, textRefusal(text.blocked)); return null; }
+      return out;
+    };
     const step = async (r) => {
       if (r.refuse) { await stop(403, refusalMessage(r.refuse, "response")); return false; }
       if (r.replaced) stats.replaced++;
-      await write(r.out);
+      const out = await guarded(() => r.out.flatMap((b) => guard.event(b)), r.out);
+      if (!out) return false;
+      await write(out);
       return true;
     };
     // An event that is not strict JSON (a repeated key, NaN, …) is refused wherever it is, as the
     // non-streaming body is: a lenient client could read a tool call this check never saw.
     const one = async (ev) => {
+      if (meter) meter.event(ev);
       const sc = eventScan(ev);
       nums.note(sc);
       const bad = sc && sc.problem;
@@ -389,6 +632,9 @@ export async function createProxy(opts = {}) {
       }
       for (const ev of split.end()) if (!(await one(ev))) return;
       if (!(await step(await machine.onEnd()))) return;
+      const tail = await guarded(() => guard.end(), []);
+      if (!tail) return;
+      await write(tail);
       res.end();
     } catch (e) {
       if (res.writableEnded) return;
@@ -430,13 +676,16 @@ export async function createProxy(opts = {}) {
     if (tracker && path === CHECKED_PATH) return checkedIds(req, res);
     const route = routes.find((r) => path === r.prefix || path.startsWith(`${r.prefix}/`));
     if (!route) throw new HttpError(404, "no model-proxy route at this path");
-    const rest = path.slice(route.prefix.length) || "/";
-    const api = apiFor(req.method, rest);
+    const scanOn = fileScanPolicy((await rt.ready()).policy).mode !== "off";
+    const rest = scanOn ? normalPath(path.slice(route.prefix.length) || "/") : path.slice(route.prefix.length) || "/";
+    const api = scanOn ? apiFor(req.method, matchPath(rest)) || apiFor(req.method, matchPath(rest).toLowerCase()) : apiFor(req.method, rest);
     const url = new URL(route.base + rest + query);
     const current = REQUEST.getStore();
     current.trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate, sessionKey: req.headers[SESSION_HEADER] });
     current.provider = providerOf(api, route.prefix);
     if (api === gemini) current.model = modelOf(api, rest, null);
+    const idRefuse = await identityGate(req, current);
+    if (idRefuse) { req.resume(); throw Object.assign(new HttpError(idRefuse.status, idRefuse.message.replace(/^MoorAI: /, "")), { api }); }
     const dh = decoy.request(req.rawHeaders, query);
     if (dh) { req.resume(); return refuseDecoy(res, api, dh, "header"); }
     let swaps = null;
@@ -458,10 +707,44 @@ export async function createProxy(opts = {}) {
     if (db) return refuseDecoy(res, api, db, "body");
 
     const fm = failMode((await rt.ready()).policy);
+    // With fileScan on, a path carrying any % escape is not matched at all: %3A, %2F, %25 … could name an endpoint
+    // (":batchGenerateContent", "/files") that no pattern here sees. Refused in enforce mode or under a closed fail
+    // mode; otherwise alerted and forwarded with the path as matched.
+    if (scanOn && path.slice(route.prefix.length).includes("%")) {
+      unevaluated("file-scan-path", "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, api, "the request path carries a percent-escape, so the endpoint it names cannot be matched and checked for files (policy fileScan)");
+    }
+    // A signed usage budget in state "exceeded" with action "block" (budget.mjs): refused in enforce mode, before
+    // anything is judged or forwarded; reported in report mode.
+    if (api) {
+      const s0 = await rt.ready();
+      const hit = budgetBlock(s0.policy, { source: s0.source });
+      if (hit) { reportBudget(s0, hit); if (enforce) { stats.refused++; return send(res, 429, budgetErrorBody(hit.budgetId), { "x-moorai-model-proxy": "refused", ...NO_RETRY }); } }
+    }
+    let ictx = null, rctx = null;
     if (api) {
       const json = parseJson(body);
       if (api !== gemini) current.model = modelOf(api, rest, json);
       const items = json ? api.outboundItems(json) : [];
+      const s1 = await rt.ready();
+      // Intent alignment: this request's session and the person's turns in it (intent.mjs). A body that does not
+      // parse is judged too: the header's session (or the trace's), else "none", with no turns captured.
+      if (KIND.has(api)) ictx = intent.begin(KIND.get(api), json, req.headers, current.trace, s1.policy);
+      // Reply-text scanning: the policy's mode, the engine's response detectors, this request's system prompt
+      // as keyed shingles (response-scan.mjs).
+      if (CODEC.has(api)) {
+        const threats = s1.engine.threatsById;
+        rctx = { mode: responseScanMode(s1.policy), policy: s1.policy, policyId: s1.policyId, source: s1.source, dets: responseDetectors(s1.engine),
+          echo: createEcho(items.filter((it) => it.kind === "system").map((it) => it.text).join("\n"), echoKey),
+          risk: (id) => (threats && threats.get(id) && threats.get(id).riskLevel) || "High" };
+      }
+      // Cloud file scan (policy fileScan): fileScanRequest above.
+      const fsCfg = fileScanPolicy(s1.policy);
+      if (fsCfg.mode !== "off" && KIND.has(api)) {
+        const ref = { body };
+        if (await fileScanRequest(KIND.get(api), api, req, res, ref, s1, fm, later, fsCfg)) return;
+        body = ref.body;
+      }
       if (enforce && items.length) {
         let v = null;
         try { v = await withTimeout(checker.checkRequest(items)); } catch {
@@ -469,6 +752,11 @@ export async function createProxy(opts = {}) {
           unevaluated("evaluation", "request", "error");
         }
         if (v && v.decision === "deny") return refuse(res, api, v, "request");
+        if (KIND.has(api)) {
+          const rm = maskResults(KIND.get(api), req, body, s1);
+          if (rm.deny) return refuse(res, api, rm.deny, "request");
+          if (rm.body) body = rm.body;
+        }
       } else if (items.length) {
         // Report mode under a closed fail mode: what cannot be judged is refused before it is forwarded.
         if (fm === "closed") { const denied = await checker.unjudged(items); if (denied.length) return refuse(res, api, { decision: "deny", denied }, "request"); }
@@ -476,14 +764,41 @@ export async function createProxy(opts = {}) {
       }
     }
 
+    // File-carrying endpoints the APIs above do not parse (fileEndpoint), with policy fileScan on.
+    if (!api && scanOn) {
+      const ep = fileEndpoint(req.method, matchPath(rest));
+      const s2 = await rt.ready();
+      const fsCfg = fileScanPolicy(s2.policy);
+      if (ep && fsCfg.mode !== "off") {
+        if (ep.kind === "upload") {
+          unevaluated("file-scan-endpoint", "request", "input");
+          if (enforce || fm === "closed") return refuseFile(res, null, "a file uploaded through this endpoint is not scanned (policy fileScan), and your organization blocks what MoorAI cannot evaluate; send the file inline in a model request instead");
+        } else {
+          const ref = { body };
+          if (await fileScanRequest(ep.kind, ep.api, req, res, ref, s2, fm, later, fsCfg)) return;
+          body = ref.body;
+        }
+      } else if (!ep && fsCfg.mode !== "off" && body.length && (req.method === "POST" || req.method === "PUT" || req.method === "PATCH")) {
+        // Any other path: a JSON body is walked for any API's file shapes and scanned like a model request; a body that
+        // is not JSON (multipart, binary, a content coding) could carry a file nothing here reads, so it is refused in
+        // enforce mode or under a closed fail mode and alerted otherwise.
+        const ref = { body };
+        if (await fileScanRequest("any", null, req, res, ref, s2, fm, later, fsCfg, "file-scan-unparsed")) return;
+        body = ref.body;
+      }
+    }
+
     const lib = url.protocol === "https:" ? https : http;
     if (api) trail.record(await rt.ready(), current, req.headers[SESSION_HEADER] ? "claude-code" : rt.identity.agentName);
+    // This request's usage collector; counted once the response is over, however it ended.
+    const meter = api ? usage.begin({ provider: current.provider, model: current.model, agentName: req.headers[SESSION_HEADER] ? "claude-code" : rt.identity.agentName }) : null;
+    if (meter) res.on("close", () => meter.end());
     stats.forwarded++;
     await new Promise((resolve) => {
       const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps, current.trace), agent: agents[url.protocol] }, (raw) => {
         const ur = creds ? maskResponse(raw, creds.secrets) : raw;
         if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
-        onResponse(ur, res, api, held, later, fm).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
+        onResponse(ur, res, api, held, later, fm, meter, ictx, rctx).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));
       // Connect budget: a fresh socket must be ready to carry the request (TCP connected; for https, the TLS
@@ -526,6 +841,6 @@ export async function createProxy(opts = {}) {
   await new Promise((res, rej) => { server.once("error", rej); server.listen(o.port, o.host, () => { server.off("error", rej); res(); }); });
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
-  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await rt.flush(); };
-  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
+  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await usage.close(); await rt.flush(); };
+  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), intentSessions: intent.size(), fileScan: fileScanner.stats(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }

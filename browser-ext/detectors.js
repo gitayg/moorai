@@ -56,10 +56,19 @@
     const hex = /^[0-9a-f]+$/i.test(val);
     return shannonEntropy(val) >= (hex ? 3.0 : 3.5);
   }
-  // The Luhn check every payment-card number carries — copied from data/detectors.js luhnValid.
-  function luhnValid(m) {
-    const d = String(m).replace(/\D/g, "");
-    if (d.length < 13 || d.length > 16) return false;
+  // #90 — a payment-card number: 13-19 digits, the Luhn check digit, and an issuer range and length a card
+  // network issues — copied from data/card-iin.js (test-detectors.mjs fails if the two differ).
+  const CARD_NETWORKS = [
+    { network: "visa", ranges: [[4, 4]], lengths: [13, 16, 19] },
+    { network: "mastercard", ranges: [[51, 55], [2221, 2720]], lengths: [16] },
+    { network: "amex", ranges: [[34, 34], [37, 37]], lengths: [15] },
+    { network: "discover", ranges: [[6011, 6011], [644, 649], [65, 65], [622126, 622925]], lengths: [16, 17, 18, 19] },
+    { network: "jcb", ranges: [[3528, 3589]], lengths: [16, 17, 18, 19] },
+    { network: "diners", ranges: [[300, 305], [3095, 3095], [36, 36], [38, 39]], lengths: [14, 15, 16, 17, 18, 19] },
+    { network: "unionpay", ranges: [[62, 62], [8100, 8171]], lengths: [16, 17, 18, 19] },
+    { network: "maestro", ranges: [[5018, 5018], [5020, 5020], [5038, 5038], [5893, 5893], [6304, 6304], [6759, 6759], [6761, 6763]], lengths: [13, 14, 15, 16, 17, 18, 19] }
+  ];
+  function luhnValid(d) {
     let sum = 0;
     for (let i = 0; i < d.length; i++) {
       let n = d.charCodeAt(d.length - 1 - i) - 48;
@@ -67,6 +76,28 @@
       sum += n;
     }
     return sum % 10 === 0;
+  }
+  function cardNetwork(d) {
+    for (const n of CARD_NETWORKS) {
+      if (!n.lengths.includes(d.length)) continue;
+      for (const [lo, hi] of n.ranges) {
+        const p = Number(d.slice(0, String(lo).length));
+        if (p >= lo && p <= hi) return n.network;
+      }
+    }
+    return null;
+  }
+  function cardNumberValid(m) {
+    const d = String(m).replace(/\D/g, "");
+    if (d.length < 13 || d.length > 19) return false;
+    return luhnValid(d) && cardNetwork(d) !== null;
+  }
+  // A card number's hash is keyed per page load, not with the install token, which could enumerate it back
+  // to the number (data/cardholder.js); "proc:" says so. Every other finding keeps the tenant-keyed hash.
+  const PROC_KEY = root.crypto.getRandomValues(new Uint8Array(32));
+  const PROCESS_KEYED = [90];
+  function spanHash(threatId, span) {
+    return PROCESS_KEYED.includes(threatId) ? "proc:" + H.hashWithKey(PROC_KEY, span).slice(H.HASH_PREFIX.length) : H.contentHash(span);
   }
   const valueOf = (m) => {
     const mm = String(m).match(/["']?([A-Za-z0-9\-_.\/+=]{20,})["']?\s*$/);
@@ -125,20 +156,29 @@
     { detectorId: "dlp-phone", threatId: 15, category: "Information & Privacy", riskLevel: "High",
       label: "a phone number", patterns: [/(?<!\d)(?:\+?\d{1,3}[ .-]?)?\(?\d{2,4}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)/] },
 
-    // === Payment data — threat #1 "Information & Privacy" / Critical (from data/detectors.js) ===
-    { detectorId: "dlp-payment-card", threatId: 1, category: "Information & Privacy", riskLevel: "Critical",
-      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,16}\b/], refine: (m) => luhnValid(m) },
+    // === Payment data — #90 cardholder data / Critical and #1 IBAN (from data/detectors.js) ===
+    { detectorId: "dlp-payment-card", threatId: 90, category: "Information & Privacy", riskLevel: "Critical",
+      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,19}\b/], refine: (m) => cardNumberValid(m) },
     { detectorId: "dlp-iban", threatId: 1, category: "Information & Privacy", riskLevel: "High",
       label: "an IBAN / bank account", patterns: [/\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/] },
 
     // === Prompt injection — threat #3 "Prompt Injection" / Critical (from data/detectors.js inj-ignore) ===
     { detectorId: "inj-ignore", threatId: 3, category: "Prompt Injection", riskLevel: "High",
       label: "an instruction-override / prompt-injection phrase",
+      // Patterns verbatim from data/detectors.js. The agent's defensive-framing refine (data/injection-tells.js:
+      // "never reveal your system prompt" is a rule, not an attack) is not ported: it is an ES module the
+      // content script cannot import, and a user typing into a chat page rarely writes the host's warnings.
       patterns: [
         /ignore (the |all |any )?(previous|above|prior|earlier) (instructions?|prompts?|messages?)/i,
         /disregard (all |any )?(previous|prior|above|earlier)/i,
         /\b(reveal|print|show) (your |the )?(system prompt|instructions|developer message)\b/i,
-        /\b(jailbreak|do anything now|\bDAN\b)\b/i
+        /\bdo anything now\b/i,
+        /\bDAN\b(?![-\s]{1,2}(?:style|like|type|prompts?|jailbreaks?|attacks?)\b)/,
+        /\bjailbr(?:eak|oken|eaked)\s{1,4}(?:mode|persona|state)\b/i,
+        /\b(?:you(?:['’]re|\s{1,4}are|\s{1,4}have\s{1,4}been|['’]ve\s{1,4}been|\s{1,4}were|\s{1,4}will\s{1,4}be)|act(?:ing)?\s{1,4}as|pretend(?:ing)?\s{1,4}to\s{1,4}be|respond(?:ing)?\s{1,4}as|behav(?:e|ing)\s{1,4}(?:as|like)|role-?play(?:ing)?\s{1,4}as|simulat(?:e|ing)|becom(?:e|ing)|are\s{1,4}now)\s{1,4}(?:(?:now|a|an|the|fully|completely|totally|officially)\s{1,4}){0,2}jailbr(?:oken|eaked)\b/i,
+        /\b(?:enter(?:ing)?|activat(?:e|ing)|enabl(?:e|ing)|engag(?:e|ing)|initiat(?:e|ing)|unlock(?:ing)?|turn(?:ing)?\s{1,4}on|switch(?:ing)?\s{1,4}(?:to|into)|go(?:ing)?\s{1,4}into)\s{1,4}(?:(?:the|your|a|full)\s{1,4}){0,1}jailbr(?:eak|oken)(?:ed)?\b(?!\s{1,4}(?:detect|protect|prevent|filter|classif|test|research|defen|scan|guard|monitor|evaluat|benchmark|attempt|attack|technique|prompt))/i,
+        /\bjailbreak(?:ing)?\s{1,4}(?:yourself|you(?![a-z'’])|your\s{1,4}(?:own\s{1,4})?(?:rules|restrictions|filters|guardrails|safety|programming|constraints|guidelines|limitations|alignment))\b/i,
+        /\[[^\]\n]{0,4}jailbr(?:eak|oken)[^\]\n]{0,4}\]|(?:^|\s)\/jailbr(?:eak|oken)\b/im
       ] }
   ];
 
@@ -165,7 +205,7 @@
           category: d.category,
           riskLevel: d.riskLevel,
           label: d.label,
-          contentHash: H.contentHash(span)  // keyed one-way; the span itself is discarded by the caller
+          contentHash: spanHash(d.threatId, span)  // keyed one-way; the span itself is discarded by the caller
         });
         break; // one finding per detector, like the engine's per-detector dedup
       }
@@ -184,7 +224,7 @@
     return findings.reduce((a, f) => (!a || (RISK_RANK[f.riskLevel] || 0) > (RISK_RANK[a.riskLevel] || 0) ? f : a), null);
   }
 
-  const api = { DETECTORS, scan, worst, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK };
+  const api = { DETECTORS, scan, worst, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK, CARD_NETWORKS, cardNumberValid };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node (unit test)
   root.MoorAIDetectors = api;                                               // content-script isolated world

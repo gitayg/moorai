@@ -169,19 +169,22 @@ export const WRAPPERS = {
 export const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"]);
 export const PWSH = new Set(["powershell", "pwsh"]);
 
-// The command of one segment: { binary, at } after env assignments and wrappers, or null when the
-// segment has no command word we can name (a bare assignment, a PowerShell method call, a URL).
+// The command of one segment: { binary, at, env } after env assignments and wrappers, or null when the
+// segment has no command word we can name (a bare assignment, a PowerShell method call, a URL). env: the
+// `NAME=value` words skipped on the way (before the command and after a wrapper such as env or sudo), as
+// [{ name, value }], since they are set for the command.
 export function commandOf(toks, ps) {
   let i = 0;
+  const env = [];
   if (ps && toks.length > 2 && /^\$[\w:]+$/.test(toks[0]) && /^[+\-*/]?=$/.test(toks[1])) i = 2;
   for (let guard = 0; guard < 8; guard++) {
-    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) { const eq = toks[i].indexOf("="); env.push({ name: toks[i].slice(0, eq), value: toks[i].slice(eq + 1) }); i++; }
     if (i >= toks.length) return null;
     const w = normBinary(toks[i]);
     const valued = WRAPPERS[w];
     if (!valued) {
       if (!w || /^[$.[@]/.test(toks[i]) || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(toks[i])) return null;
-      return { binary: w, at: i };
+      return { binary: w, at: i, env };
     }
     i++;
     if (w === "start-process") { // Start-Process -FilePath curl -ArgumentList …
@@ -195,7 +198,25 @@ export function commandOf(toks, ps) {
 }
 
 // Option scanning: which tokens are values of a flag (skipped), which are positional.
-export function scanArgs(rest, { shortValued = "", longValued = [], ps = false } = {}) {
+// With longAll (every long option the tool knows, valued or not), a long option is read the way GNU getopt_long
+// reads it: an exact name, else the one option it is a unique prefix of (`--target=d` is --target-directory; with
+// exact, as rsync's popt reads them, only the full name); with negatable, `--no-<option>` (and its prefixes) is
+// known too, as curl, wget, rsync and git accept it. With shortAll (every short option letter), a letter outside it
+// ends its cluster. shortConflict: letters one implementation reads with a value and another without (GNU cp -S
+// takes a suffix, BSD cp -S none); one followed by more letters of its cluster, or by a word that is an option, has
+// no single reading. shortOptional: letters that take the rest of their cluster as an optional value and never the
+// next word (git's PARSE_OPT_OPTARG: `git pull -So` signs with the key "o"). A long option that is ambiguous or not
+// known, a short letter not known, or a conflicting letter with no single reading, is returned with `unknown: true`
+// (its value, if any, is not taken).
+export function longName(name, longAll, negatable = false, prefix = true) {
+  if (longAll.includes(name)) return name;
+  const hits = prefix ? longAll.filter((o) => o.startsWith(name)) : [];
+  if (hits.length === 1) return hits[0];
+  if (hits.length || !negatable || !name.startsWith("--no-") || name.length < 6) return null;
+  const base = longName(`--${name.slice(5)}`, longAll, false, prefix);
+  return base && !base.startsWith("--no-") ? `--no-${base.slice(2)}` : null;
+}
+export function scanArgs(rest, { shortValued = "", longValued = [], ps = false, longAll = null, shortAll = null, negatable = false, exact = false, shortConflict = "", shortOptional = "" } = {}) {
   const flags = [], positional = [];
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
@@ -210,7 +231,9 @@ export function scanArgs(rest, { shortValued = "", longValued = [], ps = false }
     }
     if (t.startsWith("--") && t.length > 2) {
       const eq = t.indexOf("=");
-      const name = eq > 0 ? t.slice(0, eq) : t;
+      const written = eq > 0 ? t.slice(0, eq) : t;
+      const name = longAll ? longName(written, longAll, negatable, !exact) : written;
+      if (name === null) { flags.push({ name: written, value: eq > 0 ? t.slice(eq + 1) : null, unknown: true }); continue; }
       const value = eq > 0 ? t.slice(eq + 1) : longValued.includes(name) && i + 1 < rest.length ? rest[++i] : null;
       flags.push({ name, value });
       continue;
@@ -218,6 +241,9 @@ export function scanArgs(rest, { shortValued = "", longValued = [], ps = false }
     if (t.startsWith("-") && t.length > 1 && !ps) {
       for (let k = 1; k < t.length; k++) {
         const ch = t[k];
+        if (shortAll && !shortAll.includes(ch)) { flags.push({ name: `-${ch}`, value: null, unknown: true }); break; }
+        if (shortConflict.includes(ch) && (k + 1 < t.length || (/^-./.test(rest[i + 1] || "")))) { flags.push({ name: `-${ch}`, value: null, unknown: true }); break; }
+        if (shortOptional.includes(ch)) { flags.push({ name: `-${ch}`, value: k + 1 < t.length ? t.slice(k + 1) : null }); break; }
         if (shortValued.includes(ch)) {
           const value = k + 1 < t.length ? t.slice(k + 1) : i + 1 < rest.length ? rest[++i] : null;
           flags.push({ name: `-${ch}`, value });

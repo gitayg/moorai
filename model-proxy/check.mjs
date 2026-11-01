@@ -22,6 +22,11 @@
 //   businessToolActions         a function with no functionToolActions key of its own is classed by name
 //                               (money, bulk-data, identity, destructive, delegation: business-tools.mjs);
 //                               built-in action alert, raised or silenced per class by the policy.
+//   intent alignment            a call that maps to a hook tool and is not denied is judged against the
+//                               person's task (intent.mjs, passed in by server.mjs) on EVERY reading below
+//                               that maps (the as-sent mapping, a `cmd` alias read as `command`, the tool a
+//                               dispatcher names inside its arguments …), each with its own findings; the
+//                               strictest verdict replaces this one (an ask or a deny, in --mode enforce only).
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
 //   readings                    every other way a client could read the same call (an object, or a JSON
@@ -180,6 +185,12 @@ export function readings(name, input) {
   const keys = new Set(maps.map(decisionKey).filter(Boolean));
   return { maps, innerNames: [...innerNames], overflow, problem, ambiguous: overflow || problem || keys.size > 1 };
 }
+const RANK = { allow: 0, ask: 1, deny: 2 };
+// A user turn is prose: it runs nothing itself, and what the model runs because of it comes back as a tool call
+// (checkToolCalls). Detectors that judge a command about to run read ctx.prose (#43, data/destructive-mention.js).
+// A system turn (operator or injected context), a tool result and a tool call's arguments are never marked.
+const PROSE_KINDS = new Set(["prompt"]);
+const proseItem = (it) => (PROSE_KINDS.has(it.kind) ? { ...it, ctx: { ...it.ctx, prose: true, scope: "user-prompt" } } : it);
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
 function mapDirect(name, input = {}) {
@@ -224,7 +235,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   const cacheKey = randomBytes(32);
   const keyOf = (s) => createHmac("sha256", cacheKey).update(s, "utf8").digest("base64");
   const reportContext = (s, it) => Boolean(it.context) && contextPrivacy(s) === "report";
-  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${reportContext(s, it) ? ":context" : ""}\0${it.text}`);
+  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${reportContext(s, it) ? ":context" : ""}${PROSE_KINDS.has(it.kind) ? ":user" : ""}\0${it.text}`);
 
   async function checkRequest(items) {
     const s = await rt.ready();
@@ -246,7 +257,8 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
           // blocked event loop per 512 K characters (measured), ≈6 s for a 32 MB body.
           if (closed) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
         }
-        const r = reportContext(s, it) ? await scanContext(rt, it, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
+        const pi = proseItem(it);
+        const r = reportContext(s, it) ? await scanContext(rt, pi, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, pi.ctx, { tool: it.kind, event: "ModelRequest", settle, ...(it.text.length > itemCap ? { learnFrom: it.text } : {}) });
         v = remember(key, { decision: r.decision, reasons: r.reasons });
       }
       if (v.decision === "deny") denied.push({ kind: it.kind, reasons: v.reasons });
@@ -312,7 +324,11 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
 
   // The function-name rule runs on the name the model sent and on every name a dispatcher could take from
   // the arguments (readings.innerNames); a deny on any of them denies the call.
-  async function checkOne(c) {
+  // intent(tool, input, findings, name, verdict): intent alignment (intent.mjs), for a call that maps to a hook
+  // tool and is not already denied; a verdict it returns replaces this one.
+  // bound(name, input, verdict): the task-bound checks (intent.mjs judgeBound) on the call as the model sent it,
+  // after intent alignment and not on a deny; a stricter (or equally strict, with more reasons) verdict replaces it.
+  async function checkOne(c, intent, bound) {
     const rd = c.raw == null && !c.over ? readings(c.name, c.input) : null;
     const names = [c.name];
     for (const n of rd ? rd.innerNames : []) if (!names.some((x) => foldName(x) === foldName(n))) names.push(n);
@@ -323,10 +339,23 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
       if (named && named.decision === "ask" && !ask) ask = named;
     }
     const v = await checkArgs(c, rd);
-    return ask && v.decision !== "deny" ? ask : v;
+    const out = ask && v.decision !== "deny" ? ask : v;
+    if ((!intent && !bound) || out.decision === "deny" || c.raw != null || c.over) return out;
+    // Every reading that maps to a hook tool, each with the findings its own decision produced; the strictest
+    // intent verdict wins (deny over ask over none).
+    let best = null;
+    if (intent) for (const j of v.judged || []) {
+      const iv = await intent(j.tool, j.input, j.findings, c.name, out);
+      if (iv && RANK[iv.decision] > RANK[best ? best.decision : "allow"]) best = iv;
+      if (best && best.decision === "deny") break;
+    }
+    const cur = best || out;
+    if (!bound || cur.decision === "deny") return cur;
+    const bv = await bound(c.name, c.input, cur);
+    return bv && RANK[bv.decision] >= RANK[cur.decision] ? bv : cur;
   }
 
-  const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons }; };
+  const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons, findings: v.findings || [] }; };
 
   async function checkArgs(c, rd) {
     if (c.over) {
@@ -345,12 +374,15 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     }
     let out = m ? await decideMapped(m) : await scanArgs(c);
     if (out.decision === "deny") return out;
+    // judged: each mapped reading and the findings of its own decision, for intent alignment (checkOne).
+    const judged = m ? [{ tool: m.tool, input: m.input, findings: out.findings || [] }] : [];
     for (const a of alts) {
       const v = await decideMapped(a);
       if (v.decision === "deny") return v;
+      judged.push({ tool: a.tool, input: a.input, findings: v.findings });
       if (out.decision === "allow" && v.decision !== "allow") out = v;
     }
-    return out;
+    return { ...out, judged };
   }
 
   async function scanArgs(c) {
@@ -373,10 +405,10 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     return { decision: v.decision, reasons: v.reasons };
   }
 
-  async function checkToolCalls(calls) {
+  async function checkToolCalls(calls, { intent, bound } = {}) {
     const denied = [];
     for (const c of calls) {
-      const v = await checkOne(c);
+      const v = await checkOne(c, intent, bound);
       if (v.decision === "deny") denied.push({ name: c.name, reasons: v.reasons });
     }
     return { decision: denied.length ? "deny" : "allow", denied };

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Run a MoorAI script with Node.js 18 or newer: the first `node` on PATH, else /usr/bin/node, else
+# /usr/local/bin/node. `moorai-node --check` only checks. The package recommends nodejs (>= 18) rather
+# than depending on it, because fleets often install Node from a tarball or a version manager.
+set -eu
+NODE=""
+if command -v node >/dev/null 2>&1; then NODE=$(command -v node)
+elif [ -x /usr/bin/node ]; then NODE=/usr/bin/node
+elif [ -x /usr/local/bin/node ]; then NODE=/usr/local/bin/node
+fi
+if [ -z "$NODE" ]; then
+  echo "MoorAI: Node.js 18 or newer is required and none was found (install the nodejs package)." >&2
+  exit 1
+fi
+VER=$("$NODE" -p 'process.versions.node' 2>/dev/null || echo 0)
+MAJOR=${VER%%.*}
+case "$MAJOR" in ''|*[!0-9]*) MAJOR=0 ;; esac
+if [ "$MAJOR" -lt 18 ]; then
+  echo "MoorAI: Node.js 18 or newer is required; $NODE is $VER." >&2
+  exit 1
+fi
+if [ "${1:-}" = "--check" ]; then exit 0; fi
+exec "$NODE" "$@"

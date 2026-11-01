@@ -107,6 +107,23 @@ test("limits: an idle tunnel is closed at --idle-timeout-ms; a busy one is not",
   } finally { await p.close(); }
 });
 
+// The default idle timeout is 120 s, so a tunnel the client closes before sending a byte must be torn down
+// on the client's FIN, not left half-open holding a --max-connections slot (and stalling server.close).
+test("limits: a tunnel the client closes before its first byte frees its connection at once", async () => {
+  const p = await startProxy({}, deps());
+  try {
+    for (const end of ["end", "destroy"]) {
+      const c = await connectVia(p.port, "ok.example:443");
+      assert.equal(c.status, 200);
+      c.socket[end]();
+      const t = Date.now();
+      let n = 1;
+      while (n > 0 && Date.now() - t < 2000) { await new Promise((r) => setTimeout(r, 20)); n = await new Promise((r) => p.server.getConnections((_e, k) => r(k))); }
+      assert.equal(n, 0, `client ${end}(): proxy still holds the tunnel after ${Date.now() - t} ms`);
+    }
+  } finally { await p.close(); }
+});
+
 test("limits: DNS and the upstream connect are bounded by their timeouts", async () => {
   const hang = await startProxy({ dnsTimeoutMs: 200 }, deps({ resolve: () => new Promise(() => {}) }));
   try { assert.equal((await viaProxy(hang.port, "http://ok.example/")).status, 504); } finally { await hang.close(); }

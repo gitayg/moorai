@@ -1,7 +1,9 @@
 // The per-route gate: what the stdio proxy (mcp-proxy/moorai-mcp-guard.mjs) does to each JSON-RPC
 // message, minus the stdio transport. One guard per route (= one remote MCP server label).
 //
-//   gateCall(msg)        a tools/call REQUEST → { block: null } (forward) or { block: "<reason>" }
+//   gateCall(msg, { fetchPage })  a tools/call REQUEST → { block: null } (forward) or { block: "<reason>" };
+//                        fetchPage (./relist.mjs) sends the route's own tools/list upstream when block
+//                        mode needs a fresher listing first (../mcp-proxy/tool-recheck.mjs)
 //   observeTools(tools)  a tools/list RESULT  → alerts, baseline drift, quarantine; alters the list only
 //                        under policy mcpToolDrift "block" (../mcp-proxy/tool-drift.mjs), and then only
 //                        to leave out a quarantined tool
@@ -19,25 +21,36 @@
 // (open, the default) or refuses it (closed, on an enforcing device). Otherwise only an explicit deny
 // under an enforcing device refuses; "ask" forwards (no banner exists)
 // except in server mode, where the hook's headless rule settles it (deny unless policy says
-// allow-with-report).
+// allow-with-report), and except a call #65 asks about (secretEgress.unverified), whatever else also
+// asked, which is settled the same way in every mode: the gateway has no approver, so forwarding it would
+// release it.
 import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { serverRequestsOf, gateServerRequest } from "../mcp-proxy/sampling-scan.mjs";
+import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
-import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "../mcp-proxy/tool-drift.mjs";
+import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
+import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
-import { egressHits } from "../cli/secret-egress.mjs";
+import { decideMcpToolClass, createAnnotationClasses } from "../cli/mcp-tool-class.mjs";
+import { egressMatches, secretEgressVerdict, unverifiedLevel } from "../cli/secret-egress.mjs";
+import { memoryTracker } from "../cli/secret-taint.mjs";
+import { learnableSecrets, learnSource } from "../cli/secret-learn.mjs";
+import { sessionRiskConfig } from "../data/session-risk.js";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
-import { settleHeadlessAsk } from "../cli/server-mode.mjs";
+import { settleHeadlessAsk, settleNoApproverAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
-import { state, ensurePolicy } from "./policy.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
+import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
-import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, recordLedger } from "./report.mjs";
+import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
+import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -83,6 +96,12 @@ export function createGuard(route) {
   let clientRoots = [];
   const REP_DECL = { url: route.url };
   const DRIFT = createDriftTracker({ server: SERVER });
+  // #65 secrets this route's results carried (cli/secret-taint.mjs), in memory under a per-process key.
+  const SECRETS = memoryTracker();
+  const secretTtl = () => { try { return sessionRiskConfig(state.POLICY).windowMin * 60000; } catch { return 30 * 60000; } };
+  const RECHECK = createRecheck({ tracker: DRIFT });
+  // The strictest MCP annotation class each tool of this route has advertised (../cli/mcp-tool-class.mjs).
+  const ANNOTATIONS = createAnnotationClasses();
   // Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
   const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
   let REP = null;
@@ -100,7 +119,7 @@ export function createGuard(route) {
   }
   function startReputation() {
     REP_READY = ensurePolicy()
-      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined }))
+      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined, catalogue: state.POLICY && state.POLICY.mcpCatalogue }))
       .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
       .catch(() => null);
     return REP_READY;
@@ -126,7 +145,7 @@ export function createGuard(route) {
     clientRoots = out;
   }
 
-  async function gateCall(msg) {
+  async function gateCall(msg, { fetchPage = null } = {}) {
     await ensurePolicy();
     if (GATECALL_THROW) throw new Error("injected call-gate fault (test hook)");
     const tool = String(msg.params.name || "");
@@ -140,12 +159,27 @@ export function createGuard(route) {
       return { block: "this tool's advertised metadata was blocked by policy (MCP tool poisoning)" };
     }
     // Block-mode tool drift: re-judged against the policy in force now, so a console re-approval
-    // releases the tool without the client listing again.
+    // releases the tool without the client listing again. When the route's last judged listing is older
+    // than the policy's window, the gateway lists the upstream itself first, with the client's session
+    // headers (./relist.mjs), so a tool changed after the client's last listing is caught here. One
+    // re-list in flight per route, shared by concurrent calls.
     if (driftBlocking()) {
+      let rechecked = false;
+      if (fetchPage && RECHECK.due(state.POLICY)) {
+        // a listing observed off-path (forwarded before the policy loaded) is older: judged first
+        if (obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
+        const rc = await RECHECK.ensureFresh({ policy: state.POLICY, fetchPage, judge: (tools) => (ANNOTATIONS.observe(tools), judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE)) });
+        if (!rc.ok) {
+          // Closed: refused, the upstream never receives a call MoorAI could not check. Open: forwarded, with an alert.
+          const fm = failClosed();
+          if (fm) { alertFailClosed("mcp", "recheck", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("recheck"), failClosed: true }; }
+          alertRecheckFailed(SERVER, tool, rc.why, argsHash);
+        } else rechecked = rc.rechecked;
+      }
       if (!DRIFT.has(tool) && obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
       const q = DRIFT.checkCall(tool, { policy: state.POLICY });
       if (q) {
-        alertDriftCall(SERVER, tool, q.category, argsHash);
+        alertDriftCall(SERVER, tool, q.category, argsHash, rechecked);
         auditCall(SERVER, tool, "deny", argsHash);
         return { block: q.reason };
       }
@@ -154,7 +188,7 @@ export function createGuard(route) {
     if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep.reason, failClosed: rep.failClosed }; }
 
     // Declared workload profile: report or block per the profile's action; coached when unenrolled.
-    const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
+    const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, args: rawArgs, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
     for (const a of wp.alerts) alertProfile(SERVER, tool, a);
     if (wp.rejectedAlert && seenOnce(`profile-rejected:${wp.rejectedAlert.contentHash}`)) alertProfile(SERVER, tool, wp.rejectedAlert);
     if (wp.coach) coachNote(`MCP tool call ${tool} (server ${SERVER})`, wp.coach);
@@ -172,13 +206,22 @@ export function createGuard(route) {
 
     // #65 — a local secret VALUE shipped as an argument. The hook's check, against the secrets on THIS
     // machine (cwd dotenv files, ~/.aws/credentials, ~/.npmrc, ~/.netrc, .git-credentials).
-    let egress = null;
+    let egress = null, egressAsk = false;
     if (!early) {
-      const hits = egressHits(args);
+      const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }), overflowed: () => SECRETS.overflowed() } });
+      const hits = [...new Set(em.matches.map((m) => m.hash))];
       if (hits.length) {
-        const act = threatActionFor(POLICY, 65);
-        egress = { hits, block: act === "block" || act === "kill" };
+        const v = secretEgressVerdict(em.matches, { action: threatActionFor(POLICY, 65), level: unverifiedLevel(POLICY, ADMIN) });
+        egress = { hits, matches: em.matches, block: v === "deny" };
         if (egress.block && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; }
+        else if (v === "ask") {
+          // Recorded whatever another check already decided: an "ask" from any rule is settled below as a
+          // no-approver ask when #65 also asked, never forwarded with an unverified secret egress in it.
+          egressAsk = true;
+          const why = `${tool} — outbound content MoorAI could not check for a tracked secret`;
+          if (g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = why; }
+          else if (g.decision === "ask") g.reason = [g.reason, why].filter(Boolean).join(", ");
+        }
       }
     }
 
@@ -188,6 +231,19 @@ export function createGuard(route) {
     if (fsr && RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.gate = "file"; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     const fileFindings = fsr ? fsr.findings : [];
+    // labelPolicy: a named file whose sensitivity label could not be established was not evaluated. Closed
+    // refuses the call (failMode.mcpGateway); open forwards it as before.
+    if (fsr && fsr.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", "label", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("label"), failClosed: true }; }
+    }
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // closed refuses the call; open forwards it with a Medium alert, once per tool in this process.
+    if (!early && g.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", g.unevaluated.why, fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason(g.unevaluated.why), failClosed: true }; }
+      if (seenOnce(`outbound-unevaluated|${SERVER}|${tool}`)) post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server: SERVER, toolPrefix: "gateway" }), ts: new Date().toISOString(), ...IDENTITY });
+    }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
     // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
@@ -195,8 +251,16 @@ export function createGuard(route) {
     // are not reported twice.
     const ix = !early && g.decision !== "deny" ? indexWriteScan(ENGINE, POLICY, { tool, server: SERVER, args: rawArgs }) : null;
     if (ix && ix.verdict === "deny") { g.decision = "deny"; g.gate = "index"; g.reason = `${tool} — vector-store write: ${ix.reasons.join(", ")}`; g.alternatives = []; }
+    else if (ix && ix.verdict === "hold" && g.decision === "allow") { g.decision = "ask"; g.gate = "index"; g.reason = `${tool} — vector-store write held for review: ${ix.reasons.join(", ")}`; }
     const seenIds = new Set((g.findings || []).map((f) => f.threatId));
     const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
+
+    // Default policy by tool class (policy.mcpToolClassDefaults, ../cli/mcp-tool-class.mjs), with the
+    // tool's annotations from this route's listings. Decides only when stricter than everything above;
+    // its "ask" is settled below like any other.
+    const tc = early ? null : decideMcpToolClass(POLICY, { tool, server: SERVER, annotation: ANNOTATIONS.get(tool) });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) { g.decision = tc.decision; g.gate = "class"; g.reason = tc.reason; g.alternatives = []; }
+    const classDecided = g.gate === "class";
 
     // Server mode: no human will answer an "ask". The hook's rule decides it (deny by default).
     if (g.decision === "ask" && SERVER_MODE.active) {
@@ -205,10 +269,19 @@ export function createGuard(route) {
       g.decision = s.decision;
       if (s.decision === "deny") g.reason = s.reason;
     }
+    // #65 outside server mode: nobody can answer an unverified-secret "ask" here either; settled as a
+    // headless ask (deny unless policy headlessAsk is "allow-with-report"), never forwarded as is.
+    if (g.decision === "ask" && egressAsk) {
+      const s = settleNoApproverAsk(SERVER_MODE, POLICY, { decision: "ask", reason: g.reason, tool });
+      if (s.alert) alertHeadless(SERVER, tool, s.alert);
+      g.decision = s.decision;
+      if (s.decision === "deny") { g.reason = s.reason; egress.block = true; }
+    }
 
     if (state.COACH && g.decision === "deny") {
+      if (classDecided) alertToolClass(SERVER, tool, tc, "coach");
       coachNote(`MCP tool call ${tool} (server ${SERVER})`, g.reason, g.alternatives);
-      if (egress) alertEgress(SERVER, tool, egress.hits, false);
+      if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
       alertFindings(SERVER, tool, g.findings, false);
       alertFindings(SERVER, tool, fileFindings, false, "file");
       alertFindings(SERVER, tool, indexFindings, false, "index");
@@ -216,15 +289,17 @@ export function createGuard(route) {
       return { block: null };
     }
     if (g.decision === "deny") {
-      alertBlock(SERVER, tool, g.gate, argsHash);
-      if (egress) alertEgress(SERVER, tool, egress.hits, egress.block);
+      if (classDecided) alertToolClass(SERVER, tool, tc, "deny");
+      else alertBlock(SERVER, tool, g.gate, argsHash);
+      if (egress) alertEgress(SERVER, tool, egress.hits, egress.block, egress.matches);
       alertFindings(SERVER, tool, g.findings, true);
       alertFindings(SERVER, tool, fileFindings, true, "file");
       alertFindings(SERVER, tool, indexFindings, g.gate === "index", "index");
       auditCall(SERVER, tool, "deny", argsHash);
       return { block: g.reason || "policy" };
     }
-    if (egress) alertEgress(SERVER, tool, egress.hits, false);
+    if (classDecided) alertToolClass(SERVER, tool, tc, g.decision);
+    if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
     alertFindings(SERVER, tool, g.findings, false);
     alertFindings(SERVER, tool, fileFindings, false, "file");
     alertFindings(SERVER, tool, indexFindings, false, "index");
@@ -232,20 +307,21 @@ export function createGuard(route) {
     return { block: null };
   }
 
-  // Judge one listing in block mode → { changed, names } or null when it could not run.
-  function judgeListing(tools, shape) {
+  // Judge one listing in block mode → { changed, names } or null when it could not run. `driftCheck`
+  // "recheck" marks the alerts of a listing the gateway requested itself.
+  function judgeListing(tools, shape, driftCheck) {
     try {
       const ev = DRIFT.evaluateListing(tools, { policy: state.POLICY, ...shape });
       for (const q of ev.quarantined) {
         for (const sig of q.signals) {
           if (!seenOnce(`${SERVER}|quarantine|${sig.token}`)) continue;
-          alertTool(SERVER, q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON });
+          alertTool(SERVER, q.name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
         }
       }
       for (const sig of ev.removed) {
-        if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
+        if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON, driftCheck });
       }
-      reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
+      if (!driftCheck) reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
       return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
     } catch { try { DRIFT.invalidate(); } catch { /* nothing to clear */ } return null; }
   }
@@ -283,7 +359,7 @@ export function createGuard(route) {
           alertTool(SERVER, name, {
             threatId: f.threatId, category: f.category,
             riskLevel: d.decision === "deny" && !state.COACH ? "Blocked" : f.riskLevel,
-            hash: contentHash(f.match || ""),
+            hash: spanHash(f.threatId, f.match || ""),
             decision: d.decision === "deny" ? (state.COACH ? "coach" : "quarantine") : "notify"
           });
         }
@@ -296,7 +372,7 @@ export function createGuard(route) {
       DRIFT.observe(name, cur);
       for (const sig of driftSignals(baseline[cur.key], cur)) {
         if (!seenOnce(`${SERVER}|${sig.token}`)) continue;
-        alertTool(SERVER, name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
+        alertTool(SERVER, name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
       }
       recordTool(baseline, cur, ++counter);
       dirty = true;
@@ -304,7 +380,7 @@ export function createGuard(route) {
     if (dirty) saveBaseline(baseline);
     if (repFindings.length) {
       try {
-        const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })));
+        const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })), { catalogue: state.POLICY && state.POLICY.mcpCatalogue });
         REP = rep;
         if (rep.changed) reportReputation(rep);
       } catch { /* reputation is evidence */ }
@@ -329,7 +405,7 @@ export function createGuard(route) {
     const text = inboundText(result);
     if (!text) return null;
     const t0 = Date.now();
-    const d = decideInbound(state.ENGINE, state.POLICY, text, { surface: "door", stage: "file" });
+    const d = decideInbound(state.ENGINE, state.POLICY, text, { surface: "door", stage: "file", mask: !state.COACH });
     winSpent += Date.now() - t0;
     return d;
   }
@@ -338,14 +414,30 @@ export function createGuard(route) {
   // `paged`: the request asked for a later page, so an absent tool is not a removed one.
   // `tightenOnly`: a listing that answers no outstanding tools/list (server.mjs): judged, and filtered,
   // but it can only quarantine a tool, never clear one (tool-drift.mjs evaluateListing).
-  async function gateResult(msg, toolName, { paged = false, tightenOnly = false } = {}) {
+  async function gateResult(msg, toolName, { paged = false, tightenOnly = false, replyUpstream = null, methodOf = null } = {}) {
     try {
+      // A server -> client sampling / elicitation request (../mcp-proxy/sampling-scan.mjs): judged, then
+      // forwarded or refused (the server gets a JSON-RPC error upstream, the client a notice in its place).
+      const sreq = serverRequestsOf(msg);
+      if (sreq) {
+        if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+        const isToolCall = sreq.shape !== "request" && !!methodOf && methodOf(msg.id) === "tools/call";
+        const ref = gateServerRequest(msg, sreq, {
+          engine: state.ENGINE, policy: state.POLICY, coach: state.COACH, server: SERVER, toolPrefix: "gateway", label: isToolCall ? toolName : null, isToolCall,
+          identity: IDENTITY, post, record: recordLedger, failClosed, coachNote
+        });
+        if (ref) { if (ref.toServer && replyUpstream) replyUpstream(ref.toServer); return ref.toClient; }
+        if (sreq.shape === "request") return null;
+      }
+      // The upstream says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
+      if (msg && msg.method === "notifications/tools/list_changed") { DRIFT.markStale(); return null; }
       const r = msg && msg.result;
       if (r && typeof r === "object" && Array.isArray(r.tools)) {
         const tools = r.tools.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");
         if (!tools.length) return null;
         const last = r.nextCursor == null;
         const shape = { complete: !paged && last, continued: paged, last, tightenOnly };
+        ANNOTATIONS.observe(tools); // before the listing is forwarded, so the client's next call is classed by it
         if (TOOLSCAN_THROW_FROM && ++listingsSeen >= TOOLSCAN_THROW_FROM) throw new Error("injected tool-scan fault (test hook)");
         // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
         // out of it; with nothing quarantined the original still goes.
@@ -361,6 +453,10 @@ export function createGuard(route) {
       const result = resultOfResponse(msg);
       if (!result) return null;
       const label = toolName || "mcp";
+      // A secret in this result joins the route's tracked set, matched on later calls' arguments. Learned
+      // from the whole result (up to LEARN_TOTAL), not the 64 KB scan text; a result whose secrets could not
+      // all be learned holds the route as unverified until now + TTL.
+      try { const src = learnSource(result); const r = learnableSecrets(src.text); const cut = src.truncated || r.truncated; if (r.values.length || cut) SECRETS.learn(r.values, { ttl: secretTtl(), truncated: cut }); } catch { /* evidence only */ }
       // null when the scan missed the deadline (withDeadline) and there was text to judge; { unjudged }
       // when it threw or could not run. Open: forward (as always). Closed: replace what was not judged.
       const verdict = await withDeadline(scanResult(result).catch(() => ({ unjudged: "error" })), CAPS.resultDeadlineMs);
@@ -369,9 +465,14 @@ export function createGuard(route) {
       else if (verdict && verdict.unjudged) unjudged = verdict.unjudged;
       if (unjudged) return failClosedResult(msg, unjudged, label);
       if (!verdict || !verdict.findings.length) return null;
+      // A masked threat (#39 by default; cli/result-mask.mjs): the result goes on with the span replaced, or,
+      // when the mask did not verify, the threat takes its action without the mask.
+      const mk = verdict.maskIds && verdict.maskIds.length && msg.id != null ? maskResult(state.ENGINE, state.POLICY, result, { stage: "file", hash: contentHash, verdict }) : null;
+      if (mk && mk.failed && mk.fallback.decision === "deny") Object.assign(verdict, { decision: "deny", reasons: [...verdict.reasons, ...mk.fallback.reasons] });
       const blocked = !state.COACH && verdict.decision === "deny" && msg.id != null;
       if (state.COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${label} (server ${SERVER})`, verdict.reasons.join(", "), verdict.alternatives);
       alertResult(SERVER, label, verdict.findings, blocked);
+      if (!blocked && mk && !mk.failed) { post({ ...maskAlert({ tool: `gateway:${label}`, stage: "result", ids: mk.ids, count: mk.count }), mcpServer: SERVER, ...IDENTITY }); return maskedMcpResult(msg, mk); }
       if (!blocked) return null;
       return { jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${verdict.reasons.join(", ") || "policy"}` }], isError: true } };
     } catch {
