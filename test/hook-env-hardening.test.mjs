@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { parseRegValue, windowsDirs, machinePath, PROFILE_LIST_KEY } from "../cli/machine-dir.mjs";
 import { agentPosture } from "../cli/agent-posture.mjs";
@@ -117,6 +117,43 @@ test("PATH set by a settings file is reported (High); PATH merely inherited from
     await runHook(inherited, { PATH: `/opt/custom/bin:${process.env.PATH}` });
     assert.equal(c.alerts.filter((x) => x.category === REFUSAL).length, 0, "an inherited PATH is not a finding");
   } finally { await c.close(); rmTree(set); rmTree(inherited); }
+});
+
+// node checks a compile-cache entry only against the source's length and hash and its own CRC32, so whoever
+// writes the directory NODE_COMPILE_CACHE names chooses the bytecode the hook runs; OPENSSL_CONF names a
+// provider library node loads at startup.
+test("a settings file that sets NODE_COMPILE_CACHE or OPENSSL_CONF for the hook raises the Critical refusal alert", async () => {
+  const c = await consoleServer();
+  const home = sandbox(c.url, { OPENSSL_CONF: "/tmp/planted-openssl.cnf", NODE_COMPILE_CACHE: "/tmp/planted-cache" });
+  try {
+    const r = await runHook(home);
+    assert.equal(r.status, 0, r.err);
+    const a = c.alerts.find((x) => x.category === REFUSAL);
+    assert.ok(a, `no refusal alert: ${JSON.stringify(c.alerts.map((x) => x.category))}`);
+    assert.deepEqual(a.refusedEnv, ["NODE_COMPILE_CACHE", "OPENSSL_CONF"]);
+    assert.equal(a.riskLevel, "Critical");
+    assert.ok(!/planted/.test(JSON.stringify(a)), "the value never leaves the device");
+  } finally { await c.close(); rmTree(home); }
+});
+
+test("workerEnv: NODE_OPTIONS / NODE_PATH / NODE_COMPILE_CACHE / OPENSSL_CONF a settings file set stay out of the hook's workers; inherited ones and PATH stay", () => {
+  const SM = join(ROOT, "cli", "server-mode.mjs");
+  const probe = `import(${JSON.stringify(pathToFileURL(SM).href)}).then((m) => process.stdout.write(JSON.stringify(Object.keys(m.workerEnv()))))`;
+  const keys = (projectEnv, extra) => {
+    const home = sandbox("http://127.0.0.1:9", projectEnv);
+    try {
+      const proj = join(home, "proj");
+      const r = spawnSync(process.execPath, ["-e", probe], { cwd: proj, encoding: "utf8", env: { PATH: process.env.PATH || "/usr/bin:/bin", HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: proj, ...extra } });
+      assert.equal(r.status, 0, r.stderr);
+      return JSON.parse(r.stdout);
+    } finally { rmTree(home); }
+  };
+  const set = { NODE_COMPILE_CACHE: "/tmp/planted-cache", OPENSSL_CONF: "/tmp/planted-openssl.cnf", NODE_PATH: "/tmp/planted-mods", Node_Options: "--no-warnings" };
+  const k = keys(set, set);
+  for (const n of ["NODE_COMPILE_CACHE", "OPENSSL_CONF", "NODE_PATH", "Node_Options"]) assert.ok(!k.includes(n), `${n} reached the worker: ${k.join(",")}`);
+  assert.ok(k.includes("PATH"));
+  const inherited = keys(null, { NODE_COMPILE_CACHE: "/tmp/own-cache", OPENSSL_CONF: "/tmp/own-openssl.cnf" });
+  for (const n of ["NODE_COMPILE_CACHE", "OPENSSL_CONF"]) assert.ok(inherited.includes(n), `${n} the launcher set is the user's, not a finding`);
 });
 
 test("posture: a settings `env` block that sets a hook-process variable is the hookEnvOverride flag (Windows-style casing too)", () => {

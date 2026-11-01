@@ -121,15 +121,20 @@ export function readUserConfig(home = os.homedir(), read = readPlain) {
 export const isGuarded = (name) => /^(MOORAI_|MoorAI_)/.test(name) || GITHUB_ID_ENV.includes(name);
 // Variables that decide what code the hook process itself runs and where it looks for things, rather than
 // MoorAI's own configuration: NODE_OPTIONS (--require / --import runs code inside the hook), NODE_PATH
-// (where bare imports resolve), PATH (which `node` a bare hook command starts, and every bare tool name),
-// ProgramData (where the Windows machine anchors used to be read from). A settings file that sets one of
-// these for the hook is reported, and the hook does not rely on it: its registration names node by
-// absolute path (hookEntry), its Windows anchors come from HKLM and its system tools are called by
-// absolute path (cli/machine-dir.mjs), and its detached workers start without the NODE_* values the file
-// set (workerEnv). PATH that the hook merely INHERITS (the shell's, the launcher's) is not a finding: only
-// a name a settings file's `env` block sets is. Windows names are case-insensitive, so a block that sets
+// (where bare imports resolve), NODE_COMPILE_CACHE (the directory node reads cached V8 code from: an
+// entry is checked only against the source's length and hash and its own CRC32, never its owner or mode, so
+// whoever writes that directory chooses the bytecode the hook runs; MEASURED on node 22.23.4: a planted
+// entry for a same-length source ran in place of the file on disk), OPENSSL_CONF (the OpenSSL config node
+// loads at startup, before any script, whose provider and engine sections name a shared library to load;
+// MEASURED on node 22.23.4: a planted provider's constructor ran), PATH (which `node` a bare hook command
+// starts, and every bare tool name), ProgramData (where the Windows machine anchors used to be read from).
+// A settings file that sets one of these for the hook is reported, and the hook does not rely on it: its
+// registration names node by absolute path (hookEntry), its Windows anchors come from HKLM and its system
+// tools are called by absolute path (cli/machine-dir.mjs), and its detached workers start without the NODE_*
+// and OPENSSL_CONF values the file set (workerEnv). PATH that the hook merely INHERITS (the shell's, the
+// launcher's) is not a finding: only a name a settings file's `env` block sets is. Windows names are case-insensitive, so a block that sets
 // "Path" or "PROGRAMDATA" counts.
-export const HOOK_PROCESS_ENV = ["NODE_OPTIONS", "NODE_PATH", "PATH", "ProgramData"];
+export const HOOK_PROCESS_ENV = ["NODE_OPTIONS", "NODE_PATH", "NODE_COMPILE_CACHE", "OPENSSL_CONF", "PATH", "ProgramData"];
 export function hookProcessEnvName(name) {
   const n = String(name || "").toLowerCase();
   return HOOK_PROCESS_ENV.find((h) => h.toLowerCase() === n) || "";
@@ -193,14 +198,16 @@ export function refusedTrustEnv(opts = {}) {
   return [...anchors, ...hookEnv];
 }
 // The environment for the hook's own detached workers (the same script, re-run): the parent's, minus
-// NODE_OPTIONS / NODE_PATH when a settings file set them, so a planted --require does not follow the hook
-// into every worker it starts. PATH is left alone: the workers start node by absolute path and call no
-// bare tool name that matters, and stripping it would break the shell tools a user legitimately added.
+// WORKER_STRIPPED_ENV when a settings file set them, so a planted --require, compile cache or OpenSSL provider
+// does not follow the hook into every worker it starts. PATH is left alone: the workers start node by
+// absolute path and call no bare tool name that matters, and stripping it would break the shell tools a user
+// legitimately added.
+export const WORKER_STRIPPED_ENV = ["NODE_OPTIONS", "NODE_PATH", "NODE_COMPILE_CACHE", "OPENSSL_CONF"];
 export function workerEnv(env = process.env) {
   const out = { ...env };
   try {
     const u = untrustedNames({ env, home: os.homedir(), cwd: process.cwd() });
-    for (const n of ["NODE_OPTIONS", "NODE_PATH"]) if (u.has(n)) for (const k of Object.keys(out)) if (k.toLowerCase() === n.toLowerCase()) delete out[k];
+    for (const n of WORKER_STRIPPED_ENV) if (u.has(n)) for (const k of Object.keys(out)) if (k.toLowerCase() === n.toLowerCase()) delete out[k];
   } catch { /* keep the parent's */ }
   return out;
 }

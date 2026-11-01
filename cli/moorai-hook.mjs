@@ -3218,7 +3218,7 @@ async function main() {
     if (sta) await post({ ...sta, ts: new Date().toISOString(), ...IDENTITY });
     // Off server mode too: a trust anchor or export endpoint a settings file set was ignored. Names only.
     // In server mode tamperAlert already names the MOORAI_* ones; the hook-process names (NODE_OPTIONS,
-    // NODE_PATH, PATH, ProgramData) are reported in both modes. A PATH-only finding is High, not Critical:
+    // NODE_PATH, NODE_COMPILE_CACHE, OPENSSL_CONF, PATH, ProgramData) are reported in both modes. A PATH-only finding is High, not Critical:
     // the hook no longer resolves anything through PATH, and users do add tool directories that way.
     const envRefused = refusedTrustEnv().filter((n) => !SERVER.active || hookProcessEnvName(n));
     if (envRefused.length) await post({ threatId: 0, category: "Policy: environment set by a settings file refused", riskLevel: envRefused.every((n) => n === "PATH") ? "High" : "Critical", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: `envtrust:${envRefused.join(",")}`, refusedEnv: envRefused, ...IDENTITY });

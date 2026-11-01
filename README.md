@@ -370,7 +370,9 @@ Claude Code can send each hook event to a local HTTP endpoint instead of startin
 have already loaded every module the hook imports and compiled the detector patterns, and runs the same
 `cli/moorai-hook.mjs` in one of them for each event. The decision, its reason, the alerts and the state
 files are the command hook's own (`test/hookd-parity.test.mjs` runs 225 events through both and compares
-every outcome and every alert record), without Node start-up and module loading on each tool call.
+every outcome and every alert record; a policy served fresh and one served from the one-minute cache count as
+the same `policySource`, since which events fall inside that minute depends on timing), without Node start-up
+and module loading on each tool call.
 
 ```bash
 node cli/moorai-hookd.mjs unit --out ~/Library/LaunchAgents                 # macOS: writes dev.moorai.hookd.plist, prints the launchctl command
@@ -964,10 +966,16 @@ hook's environment, so a repository's `.claude/settings.json` could otherwise su
 value that a user, project or local settings file sets for one of those is ignored and reported to the console
 (names only); a managed settings value, the launching environment and the root-owned anchor files are trusted.
 The registry mirrors (`MOORAI_NPM_REGISTRY` and the rest) and `MOORAI_OFFLINE` are read under the same rule.
-A settings file that sets `NODE_OPTIONS`, `NODE_PATH`, `PATH` or `ProgramData` for the hook is reported the same
-way (and is the posture flag `hookEnvOverride`); the hook does not depend on them: it is registered with node
-by absolute path, its Windows anchors come from HKLM, and its detached workers start without the file's
-`NODE_OPTIONS` / `NODE_PATH`.
+A settings file that sets `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `PATH` or
+`ProgramData` for the hook is reported the same way (and is the posture flag `hookEnvOverride`); the hook does
+not depend on them: it is registered with node by absolute path, its Windows anchors come from HKLM, and its
+detached workers start without the file's `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE` or `OPENSSL_CONF`.
+`NODE_COMPILE_CACHE` is on the list because node checks a cache entry only against the source's length and
+hash and its own CRC32, not its owner or mode, so whoever writes that directory chooses the bytecode the hook
+runs (measured on node 22.23.4: a planted entry ran in place of the file on disk). `OPENSSL_CONF` is on it
+because node loads that OpenSSL config at startup, before any script, and a provider section in it names a
+shared library to load (measured on node 22.23.4: a planted provider's constructor ran). Either value set by
+the launching environment is not a finding.
 
 **Managed devices: the admin binding wins.** On a laptop as on a server, the hook and the desktop app read the
 root-owned machine config (`/etc/moorai/config.json`; Windows `<ProgramData>\MoorAI\config.json` with
