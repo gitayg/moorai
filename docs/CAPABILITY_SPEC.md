@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 89-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 90-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 89 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 90 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -550,7 +550,7 @@ applies a settings file's `env` to hook processes is taken from its documentatio
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 89 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 90 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
@@ -558,7 +558,7 @@ ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 89 threat
 | High | 49 | 12–19 |
 | Medium | 22 | 6–11 |
 
-Note: 8 of the 89 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 93 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -642,8 +642,19 @@ is validated against.
     `MCP: sampling request not fully evaluated` alert (threat id 0, Medium, `failWhy: "size"`) and closed
     refuses it (`FAIL_CLOSED`, basis `UNEVALUATED_SIZE_CAP`); a finding in what was read still refuses it.
     Content-free
-    alerts at stage `sampling`. **Not covered:** the client's answer going back to the server, a sampling
-    rate or token budget, and user approval of the request (the client's).
+    alerts at stage `sampling`. The client's answer ([`mcp-proxy/sampling-response.mjs`](../mcp-proxy/sampling-response.mjs)):
+    a `CreateMessageResult` or `ElicitResult` sent as the client's JSON-RPC response, or the values of
+    `params.inputResponses` on a retried `tools/call` / `resources/read` / `prompts/get`, has its `content`
+    scanned with the data-loss detectors and `mergeOutbound` (decoded base64 / `data:`, `labelPolicy` "send",
+    #92 over-sharing). *Threats 1, 9, 15, 39, 44, 90, 92.* Refused when a finding resolves to block / kill,
+    or on any finding under `policy.samplingResponseAction: "block"`: a response becomes JSON-RPC error `-1`
+    to the server (the guard also notifies the client; the gateway cannot, a POSTed response is answered
+    `202`), a retry is not sent and the client gets an `isError` result or a JSON-RPC error. Unjudged or
+    past the decode caps: `failMode.mcpGateway`. Alerts at stage `sampling-response`. `policy.samplingBudget`
+    (#97) counts sampling requests and their stated `maxTokens` per session (guard process; gateway route and
+    `Mcp-Session-Id`) in a sliding window (default report at 30 requests / 100,000 tokens / 60 min; `block`
+    refuses each request past a limit). **Not covered:** #65 local secret values in an answer, tokens the
+    model actually generated, and user approval of the request (the client's).
 
 ### B2. Skill-surface analysis (client)
 
@@ -1302,7 +1313,10 @@ is validated against.
     [`data/session-risk.js`](../data/session-risk.js): taint (an injection-class finding on ingested content,
     then an outbound action or credential-file read within `windowMin` → #59 `Agent behavior: outbound
     action after untrusted content`), sequences within `seqSteps` (staged credential → outbound; archive →
-    outbound; mass read → an upload of 4 KB or more to a new destination), slow exfiltration (5 or more
+    outbound; mass read → an upload of 4 KB or more to a new destination; `split-out`: a file split into
+    chunks → outbound, ATT&CK T1030; `stage-out`: a sensitive location copied or archived → outbound, T1074.001,
+    not when the staged-credential sequence fired; both also within one call, read by
+    [`data/exfil-channels.js`](../data/exfil-channels.js) `stagingFacts`), slow exfiltration (5 or more
     transfers of up to 8 KB to one destination summing 16 KB or more), and a decaying score with a threshold
     alert. `policy.sessionRisk.mode` `report` (default) | `ask` | `off`; defaults threshold 12, `windowMin`
     30, `halfLifeMin` 15, `seqSteps` 10, `massReads` 30. [`data/circuit-breaker.js`](../data/circuit-breaker.js):
@@ -2493,6 +2507,9 @@ harvesting and path scope".
   `mysqldump`, `mongodump`, `mongoexport`, ` .dump`). Each posts once per key per window: threat 59, stage
   `behavior`, reason `BEHAVIOR_SIGNAL`, `contentHash` `mcp-harvest:<kind>`, `signature { kind, reads, bytes,
   windowMin, thresholds, mode }`, `mcpServer`. No tool argument, URI, path or result text.
+- Framework credit: #59 credits MITRE ATLAS AML.T0085 (Data from AI Services) through this check, bounded
+  (`atlasPartial`: reads through MCP tools, per server and session; proven by the `mcp-reads-hook` and
+  `mcp-reads-guard` block-mode tests).
 - Verdict: under `ask` / `block`, a read call while any signal holds (and a dump call) takes ask / deny, merged by
   rank with the surface's verdict (never weaker). A non-read call and a result are never held. Hook: an unenrolled
   device coaches. Guard: a denied `resources/read` is answered with JSON-RPC error `-32001`; an ask is forwarded.
@@ -3049,9 +3066,74 @@ engine can use it in every surface).
   cited in `data/oast-hosts.js`. Default `notify` for both: no benign corpus exercises them, so the
   promotion rule (zero benign fires in a corpus that exercises the stage) cannot be met yet.
 
+- **#95 `text-storage-upload`** (ATT&CK T1567.003) — a command labelled Bash or
+  PowerShell (`ctx.shell`) that sends data to a listed paste site (`TEXT_STORAGE_HOSTS`: an HTTP body, upload or
+  non-GET method, or input piped or redirected into nc/socat), creates or extends a GitHub gist (`gh gist
+  create|new`, `gh gist edit --add`, `gh api gists` with a body or POST/PATCH, an HTTP upload to
+  api.github.com/gists) or a GitLab snippet. Prompts, read files and writes are silent. Default `notify`. In the
+  Agent SDK through the same detector.
+- **#96 `code-repo-push`** (ATT&CK T1567.001) — [`cli/repo-push.mjs`](../cli/repo-push.mjs):
+  a `git push` to a URL that is none of the project's remotes, to a remote added or re-pointed in the same
+  command or (hook) an earlier call of the session ([`cli/repo-push-state.mjs`](../cli/repo-push-state.mjs),
+  `~/.moorai/repo-push.json`, keyed hashes only, 256 entries, 24 h), or `gh repo create … --push`. Remotes come
+  from the git config of the command's directory (`-C`, a `cd` earlier in the command; a worktree's
+  `commondir`). Local destinations and the signed policy's `codeRepoAllow` (host, host/owner, host/owner/repo,
+  `*.host`) are silent. Default `notify`. The Agent SDK runs the one-command form.
+
 Limits: renamed or copied downloads, variable paths, `scp`/`rsync`/`httpie` uploads, archives of a secret
-file, and unlisted hosts are not seen. Benign corpora were unchanged (v2 20/602) but barely exercise these
+file, and unlisted hosts are not seen. Paste sites, gists and pushes reached through MCP tools, WebFetch or a
+hosting API other than the gist and snippet endpoints are not seen; `url.<base>.insteadOf` is not applied. Benign corpora were unchanged (v2 20/602) but barely exercise these
 shapes (2 of 610 samples contain curl/wget). Tested on macOS only.
+
+## Credential access read structurally (#55)
+
+ATT&CK T1552.001, T1552.003, T1552.004, T1555.001, T1555.003, T1003.008 and T1528 as an agent performs them
+through the hook's tools. One location rule set, `data/cred-paths.js` `credPathKind`, names what a path holds
+(secret-file, token-store, private-key, history, browser-store, keychain-db, shadow) by the end of the path
+after `\` -> `/`, lower-casing and folding `.` / `..`.
+
+- **#55 `cred-access`** (`data/detectors-cred-access.js`, prompt and output stages, before `cred-file-access`
+  so the pattern detector is the one reported where both fire). `data/cred-access.js` `credAccessKind` reads
+  the command through `data/net-exec.js` `commandSegments` (the `data/shell-parse.js` reader; `sh -c`,
+  `pwsh -Command`, `eval`, heredoc scripts and wrappers expanded). It fires on: a credential path as a
+  positional argument or `<` redirect of any command not in the non-exposing set (sources only for a
+  copier); a credential directory given to a copier, an archiver or a searcher that prints lines (not
+  `-l`, `-c`, `-q`; the pattern is not inspected); a quoted credential path inside inline interpreter code (`-c`, `-e`, `-p`,
+  `--eval`) or a keychain / shadow API named there; the secret-printing commands listed in the README; a
+  recursive secret or key-file search rooted at a broad root (`/`, a home directory, the users root, `/etc`,
+  `C:\`, `C:\Users\<name>`, `$HOME`, `$env:USERPROFILE`); a history file searched for a secret word, or
+  `history` / `Get-History` piped to one. Not judged: content the agent reads or writes (ctx.inbound,
+  ctx.targetPath, ctx.template), a path after a flag that uses it, a token piped to a registry
+  `login --password-stdin`, a whole read of a history file.
+- **Paths without a command.** `cli/hook-core.mjs` `decideCredFileRead` (a `Read`, a path a PowerShell command
+  reads, a file an MCP argument names, in the hook and the stdio proxy) probes `cat <path>` as before and,
+  when that finds nothing and `credPathKind` names a non-history store, probes the path quoted, so the
+  structural detector decides it.
+- **Key files by content.** `decideCredContent`: a file whose first non-blank line is a PEM, OpenSSH, PGP or
+  PuTTY private-key header is #55 (`private-key-file`, decided like a structural finding) on a `Read`, on a
+  path a `Bash` or `PowerShell` command reads, and on a file an MCP argument names, when its path is not
+  already a known location. A source file that mentions the header further down is not one.
+- **Grep.** `Grep` is a registered `PreToolUse` matcher. `cli/cred-grep.mjs` `grepCredHit` decides #55 for
+  a credential path or a glob naming one; a credential directory searched with `output_mode: "content"` or a
+  context option (any pattern: whether a regex matches every line is not guessed at) or for a secret word; a
+  history file with a secret-word pattern; or a broad root with a secret-word pattern or a key-file glob. The
+  path is classified as written, resolved against the call's cwd (`~` expanded, `..` folded) and through
+  realpath when it exists.
+  Any other `Grep` falls through to the unknown-tool path, allowed unread as before.
+- **Cloud metadata (#55 `cloud-metadata-access`, T1552.005).** A host under nip.io, sslip.io, xip.io,
+  traefik.me, rbndr.us or 1u.ms whose labels carry a metadata address (dotted, dashed or 8-hex-digit) is
+  judged as that address. Any other name is judged as written; the egress proxy refuses one that resolves to
+  a metadata address.
+- **`cred-file-access` precision.** `.ssh/id_<type>.pub` and `.npmrc.example` / `.sample` / `.template` no
+  longer match its patterns.
+
+Bounded by the shell reader's caps (262,144 characters, 256 segments, depth 3) and a prefilter
+(`CRED_HINT`) before any parse; `test/cred-access.test.mjs` pins every classified path to the prefilter and
+times the reader at 60 KB vs 240 KB. Content-free: refine runs once and the match is one character.
+Limits: a program or script file the agent runs is not read; Windows Credential Manager (`cmdkey`,
+`vaultcmd`, `PasswordVault`, T1555.004) is not covered; a path built at run time is not resolved; a `*.key`
+Keynote document reads as a key file; `cred-file-access`'s `.ssh/id_<type>` pattern still fires on a key that
+is only used (`chmod`, `ssh -i`, `ssh-add`).
 
 ## Microsoft Purview sensitivity labels (`labelPolicy`)
 
@@ -5265,7 +5347,9 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
 
 [`cli/session-stop.mjs`](../cli/session-stop.mjs), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs)
 (`operatorStop`, Claude Code `PreToolUse` and `UserPromptSubmit`). Console side: `server/session-stop.js` in the
-console repository. Test: `test/session-stop-hook.test.mjs`.
+console repository. Tests: `test/session-stop-hook.test.mjs`, `test/stop-channel.test.mjs`. Stop channel:
+[`cli/stop-channel.mjs`](../cli/stop-channel.mjs) and [`cli/stop-watch.mjs`](../cli/stop-watch.mjs); console
+`server/stop-channel.js`.
 
 - **Policy key.** Top-level `agentStops: [{ id: "st-<32 hex>", scope: "session" | "device", session?: "h2:<16 hex>",
   at, reason? }]`, read from the verified policy only (live, cached or last-known-good; an unsigned, altered or
@@ -5279,7 +5363,23 @@ console repository. Test: `test/session-stop-hook.test.mjs`.
   `signalled`), then `SIGTERM` to the agent process: the hook's parent chain walked past at most four hook shells
   (and a shim's node), signalled only when it is an AI CLI (`ai-cli-parents.mjs` AGENTS) or node, on macOS and
   Linux. A device stop also writes `~/.moorai/kill-session`, which the desktop host consumes to end its PTY agent.
-- **Limits.** Applied on the first hook call after the 60-second policy cache; Windows is denied but not
+- **Stop channel.** Only while the verified policy carries `stopChannel` (`{ v: 1, path, waitSec }`) and the device
+  is enrolled (not server mode). Each `PreToolUse` and `UserPromptSubmit`: start the stop watcher when
+  `~/.moorai/stop-watch.lock` is missing or not touched for 45 s; once per session write
+  `~/.moorai/stop-sessions/<session hex>.json` (`{ v: 1, session, pid, id, t }`: the agent process the stop's parent
+  walk finds, and its start time and name); read `~/.moorai/stop-channel.json`. The watcher long-polls
+  `GET <serverUrl>/api/agents/stop-channel?actor=<h2:>&known=<state>&wait=25` (`X-Install-Token`); a 200 is the stop
+  document `{ v: 1, tenant, actor, state, agentStops, iat, sig }`, `sig` ed25519 by the policy key over
+  `moorai-stops|v1|<tenant>|<iat>|<sha256 of the canonical JSON of every field but sig>`; 204 is no change; 401 or
+  404 ends the watcher. A document that verifies under the anchor or pin (with neither, taken unverified, like the
+  policy), names the tenant and actor, and is newer than the enforced policy's `policySig.iat` adds its stops to the
+  policy's; it never removes one. The watcher writes the document (or removes the file when it has no stop), and for
+  a document that verified under a key sends `SIGTERM` to each live recorded session the stop names whose pid still
+  has the recorded start time and name, posting one `SESSION_KILL` alert per session signalled (`tool`
+  `stop-watch`); a device stop also writes `~/.moorai/kill-session`. It exits when no recorded session is alive for
+  10 minutes (a record with no pid counts as alive for 12 hours).
+- **Limits.** Without the stop channel, applied on the first hook call after the 60-second policy cache; a same-user
+  process can kill the watcher or delete the stop file (the stop then takes that path); Windows is denied but not
   signalled; no network block; the model proxy, MCP gateway and egress proxy do not read `agentStops`; a device
   that cannot reach the console does not learn of a stop; a same-user process that rewrites the policy cache and
   the advisory policy mark can serve a policy signed before the stop until its maximum age (15 minutes by default)

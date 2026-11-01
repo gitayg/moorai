@@ -54,9 +54,11 @@ for (const cmd of NEGATIVES) {
 }
 
 test("ATT&CK: #55 credits T1552.003, T1555.003 and T1528; T1555.001 now names dump-keychain", () => {
+  // v1.47.0 (test/cred-access.test.mjs): T1555.003 and T1528 are full; T1552.003 stays partial, bounded by design.
   assert.equal(credit(55, "T1552.003")?.coverage, "partial");
-  assert.equal(credit(55, "T1555.003")?.coverage, "partial");
-  assert.equal(credit(55, "T1528")?.coverage, "partial");
+  assert.equal(credit(55, "T1552.003")?.bound, "design");
+  assert.equal(credit(55, "T1555.003")?.coverage, "full");
+  assert.equal(credit(55, "T1528")?.coverage, "full");
   assert.match(credit(55, "T1555.001").reason, /dump/i);
 });
 

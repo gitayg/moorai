@@ -24,7 +24,7 @@ import { lstatSync, statSync, realpathSync, openSync, readSync, fstatSync, close
 import { resolve, join, basename, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate } from "./hook-core.mjs";
+import { decideText, decideCredFileRead, decideCredContent, decideFileMetadata, fileScanText, isEnvTemplate } from "./hook-core.mjs";
 import { decideSensitivityLabel } from "./sensitivity-labels.mjs";
 
 export const MCP_FILE_CAPS = Object.freeze({
@@ -201,10 +201,12 @@ export function scanMcpFileArgs(engine, policy, { tool, args, bases = [], home, 
       merge(ld);
       if (ld.unevaluated) out.unevaluated = true;
       if (!argIds.includes(55)) {
+        let named = false;
         for (const p of [...new Set([f.path, f.real])]) {
           const pd = decideCredFileRead(engine, policy, p);
-          if (pd.findings.length) { merge(pd); break; }
+          if (pd.findings.length) { merge(pd); named = true; break; }
         }
+        if (!named) merge(decideCredContent(policy, text, f.real));
       }
       out.findings.push(...fd.findings);
       out.files.push(fd);

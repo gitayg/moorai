@@ -42,7 +42,7 @@ That's the exact trade MoorAI refuses.
 - **Egress rules** — `egressRules: [{ binary?, host | cidr, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host or address range, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. `cidr` (instead of `host`) is one range or a list of up to 64 (`10.0.0.0/8`, `fd00:20::/32`); a prefix with host bits set is refused, and `/0` is accepted only for `alert` or `block`. From a call's text a cidr rule matches an IP literal inside the range (IPv4, IPv6 with or without a zone id such as `%eth0`, IPv4-mapped IPv6); it never matches a host name there, because the hook does no DNS. The egress proxy and the MCP gateway's own upstream connection match it on the resolved address. Agents older than 1.28.0 drop a cidr rule as an unknown key, and cidr rules are not accepted inside a workload profile. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio MCP proxy judge the destinations a `tools/call`'s arguments name by the same function (the tool named `mcp__<server>__<tool>`), so a deny holds the same way in the hook, the gateway and the stdio proxy; the gateway also judges its own connection to each remote MCP server (host, port, method and path, and cidr rules on the address its DNS lookup returns). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. An upload to any service on this machine (loopback, whatever the port — MoorAI's own moorai-serve, model proxy and MCP gateway included) is always flagged (class `moorai-control`). The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below. The Agent SDK and the `moorai-serve` sidecar judge it too, from an in-memory store (where `"block"` also denies the call).
 - **Task-bound tool calls** — two deterministic checks of a tool call against the person's task, with no model guarding a model. *Object check:* for a high-impact call (an MCP write, a business-impact function such as a refund or a role grant, a function whose name carries a write verb, or any tool `policy.intentArgs` names), the object of the action must be named in the task: under "cut the apple", `cut({target:"apple"})` passes and `cut({target:"hand"})` is class `object-not-in-task`, decided by `policy.intentAlignment` like the other intent classes. *Task allowlists:* `policy.taskAllowlists` restricts a session whose task matches an entry (by keywords, or an explicit task id set over `moorai-serve`'s `POST /v1/task` or the Agent SDK) to the tools and argument values the entry lists, holding anything else at the entry's default (`"deny"` or `"ask"`); an unreadable entry denies what it would have covered and raises an alert. Both run in the model proxy, `moorai-serve`, the Agent SDK and the hook's MCP path. Token matching, not semantics — limits below.
-- **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files, MCP read calls or MCP resource reads; a repeated call counts once) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
+- **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files, MCP read calls or MCP resource reads; a repeated call counts once) then an upload of 4 KB or more to a destination new to the session; a file split into chunks (`split`, `zip -s`, `7z -v`, `rar -v`, `tar -M`, `dd skip= count=`) then sent out; a sensitive location (`~/.ssh`, `~/.aws`, `~/.gnupg`, keychains, browser profiles, shell history, mail stores, `.env`, private keys, the home directory or its Documents / Desktop) copied or archived and then sent out, in a later call or the same one; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Origin-based session taint** — a document from a browser download or a messaging app can carry a prompt injection no detector recognises, so reading a file that came from outside taints the session by its origin, with no content analysis. Outside means a macOS `com.apple.quarantine` mark (or the `kMDItemWhereFroms` download record left after it is removed), a Windows `Zone.Identifier` stream of zone 3 or 4, or a path under the download directory (`~/Downloads`; on Linux also `XDG_DOWNLOAD_DIR`). A Read, a shell read (`cat`, `head`, `textutil`, `pandoc` …), an MCP filesystem read, unpacking an outside archive and running an outside file all taint it, and so does removing an origin mark (`xattr -d` / `-c` / `-w com.apple.quarantine`, `Unblock-File`, `-Stream Zone.Identifier`, `streams -d`), which also posts `Origin taint: origin mark removed` every time. For 30 minutes (`windowMin`) six action classes then take `policy.sessionRisk.originTaint`: an outbound transfer (upload, data-carrying request, gist, push to a URL, MCP write), a write to a memory or instruction file, adding an MCP server or installing a skill or plugin, running an outside file, `git push`, and sending a message. `"notify"` (the default) posts `Origin taint: action after reading an internet-origin file` (#3, reason `ORIGIN_TAINT`) naming the source kind, the app, a keyed host hash and the action class; `"ask"` asks ("session read an internet-origin file (Chrome)"); `"block"` denies; `"off"` turns it off.
 - **Quarantined reader** — origin taint raises scrutiny after the agent has read an outside file; the quarantined reader keeps that file's raw text from the agent. Under `policy.fileQuarantine: "summary"`, a Read, a shell read (`cat`, `head`, `textutil`, `pandoc`, `pdftotext` …), an MCP filesystem read or a NotebookRead of a file that came from outside (the origin taint rules) is read by a separate model with no tools, and the agent gets a structured summary framed as untrusted data from MoorAI's quarantined reader: a Read is pointed at the summary file, and the other reads are denied with the summary in the reason. `"ask"` asks the user whether the agent may have the raw file and offers the summary; `"off"` (the default) leaves reads alone. The model is the OpenAI-compatible server `fileQuarantineModel` names (auto-detecting Ollama or LM Studio on 127.0.0.1 takes the admin binding's `fileQuarantineAutodetect`), and file text goes to no other host unless the admin binding allows it. Any process of the agent's own OS user can listen on a loopback port, run a signed runtime as a code host or replace a binary it owns, so the reader must run under a different OS account (an Ollama system service under its own user, say): the process that accepts the reader's connection is checked before anything is sent, and one running as the agent's user, one inside the agent's process tree, or one that cannot be identified is refused (`untrusted-reader`). A same-user reader is an admin-binding opt-in, pinned but weaker. A summary that itself raises an injection finding is withheld and the read refused. With no reader, a timeout or output that fails the schema, the read is refused; under `"ask"` the user can still approve the raw file. Each file posts one content-free `Quarantined read` alert (#3, reason `QUARANTINE_READ`) with its outcome (`summarised`, `unsupported`, `withheld`, `no-reader`, `untrusted-reader` or `asked`), source kind, app, keyed host hash, model kind and sizes. Origin taint still applies. The endpoint hook only: the model proxy, MoorAI for AI Servers and `@moorai/agent-sdk` do not run it.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
@@ -64,8 +64,9 @@ That's the exact trade MoorAI refuses.
 - **MCP server package policy** — judges a registry MCP server (an npm or PyPI package started by npx, uvx or pipx) at the Claude Code hook and the MCP stdio guard: a launch with no exact version (none, a range or `latest`), a version other than the one the org pinned, a package that fails a critical `moorai-mcp-check` check (a documented malicious or typosquatted name, a name not on the registry, a repository that publishes another package, a remote install script, poisoned tool metadata, a SkillTriage DO-NOT-INSTALL verdict, an integrity mismatch), or a release on the known-bad list. Signed policy `mcpPackagePolicy`: `"report"` (the default: a content-free alert, `MCP: server package supply chain`, #57, on first sight or a version change), `"ask"` or `"block"`, or `{ action, pins: { "npm:<name>": "<version>" }, requirePins }`; a value outside the three reads as `block`. A block refuses the server's tool calls; the guard has no prompt, so `ask` there forwards and records. A version change the reputation cache noticed is reported, never held (the cache is user-writable): pin the approved version to hold a change. The hook judges offline (names and the copy npx installed); the guard adds the registry codes when `mcpReputation.lookup` is on. Local, docker and remote servers are not judged here. Reason code `MCP_PACKAGE_POLICY`.
 - **Known-compromised package releases** — a shell command that installs or runs a release on the known-bad list is denied by default, through `npm`/`pnpm`/`yarn`/`bun` install and add, `npx`/`bunx`/`npm exec`/`pnpm dlx`, `pip`/`python -m pip`/`pipx`, `uv add`/`uv pip install`/`uv tool`/`uvx`, `poetry add` and `pdm add`, also inside `sh -c`, `eval` and decoded scripts; an MCP server launched from such a release is refused the same way. The shipped list holds `litellm==1.107.0` (PyPI, [Oct 21, 2026 incident](https://docs.litellm.ai/blog/security-incident-oct-21-2026)) and the 24 npm releases published from compromised maintainer accounts on 2025-09-08 and 09 (chalk 5.6.1, debug 4.4.2, duckdb 1.3.3 and the rest). The signed policy's `knownBadPackages: { action, packages: [{ ecosystem: "npm" | "pypi" | "url", name, versions: [...] | "*" }] }` adds packages, every-version entries and install-script URLs (`curl … | sh`, `bash <(curl …)`) and sets `action` `block` (default), `ask` or `report`; it cannot remove a shipped entry. A version entry matches only that exact version: an unpinned install, a range or a dist-tag of a listed package is not matched, and nor is a requirements file, a lockfile install or an install script's own downloads. Alert `Known-compromised package release` (#57, reason `PACKAGE_KNOWN_BAD`) carries the ecosystem, the list the entry came from, the match count and a keyed hash, never the package name, version or command.
 - **Signed MCP server and skill catalogue** — an open catalogue format (`moorai-mcp-catalogue` v1: name, ecosystem, status, source, repository, per-version scan verdict, reason codes, artifact or tree sha256, and reputation fields from the agent's own scoring) signed with ed25519. `scripts/mcp-catalogue-build.mjs` builds and signs it from [`data/mcp-catalogue/source.json`](data/mcp-catalogue/source.json), runs MoorAI's package engine over a local copy with `--scan`, and exports the v0.1 MCP registry responses for allow-listable versions with `--format mcp-registry`. A device uses a catalogue only after its signature verifies against a key it got out of band (the signed policy's `mcpCatalogue.publicKeys`, `MOORAI_CATALOGUE_PUBKEY`, or root-owned `/etc/moorai/catalogue.pub`); with no key it is not used. The cached copy (`~/.moorai/mcp-catalogue.json`, user-writable) is re-verified on every read and never decides its own freshness: a fetch time in the future makes it stale, so it is fetched again; a catalogue past its signed `expiresAt` (mandatory) is refused, cached or fetched, so an old signed catalogue cannot be replayed past its expiry; a catalogue whose `seq` is below the highest this device accepted from that key is refused, cached or fetched. That mark lives in the same writable directory, so a local user who rewrites both files can hold an older signed catalogue until the next refresh, at most 24 hours. An expired catalogue's positive verdicts are not used and it is reported as `catalogue-expired`, but its deny side does not fail open: the do-not-install entries and negative per-version verdicts (`do-not-install`, `review`, `caution`) of the last verified copy keep applying until a current one arrives, so withholding a refresh cannot clear the denylist. Verdicts feed MCP reputation for npm and PyPI servers as `catalogue-do-not-install`, `catalogue-review` and `catalogue-caution`; `no-findings` is evidence only and never raises a score. The MCP stdio guard fetches `mcpCatalogue.url` (https, one bare GET a day) and keeps the catalogue on the re-score after `tools/list`. The HTTP gateway fetches it too, but its servers are remote and remote, docker and skill entries are not matched yet, so it draws no verdict from it. The Claude Code hook reads only a cached copy, with the environment, root-owned or built-in keys (not the policy's keys or URL). Skill entries and `skillTreeDigest` exist in the format and the generator; nothing on the device consumes them yet. `moorai-mcp-catalogue verify <file>` and `status` check a file or the cached copy. A verdict says what a scan found, never that a server is safe. The publisher key and the hosted feed are not published yet.
-- **MCP sampling and elicitation requests** — the MCP stdio guard and the HTTP MCP gateway judge a server's own request to the client before the client sees it: `sampling/createMessage` (run this prompt on your model) and `elicitation/create` (ask your user this), in both shapes the MCP specification has used — a JSON-RPC request from the server (2024-11-05 to 2025-11-25) and `result.inputRequests` in the result of a `tools/call`, `resources/read` or `prompts/get` (2026-07-28). The system prompt, message text, request-scoped tool definitions and stop sequences of a sampling request, and the message, URL and requested schema of an elicitation, are scanned by the tool-result engine at stage `file` (prompt injection, tool and rules poisoning, invisible text, secrets, personal data). `includeContext` `"allServers"` (Medium) or `"thisServer"` (Low) is reported as a request for the client's context. **Report-first:** the request is forwarded and reported unless a finding's action resolves to block / kill; a signed policy's `samplingScanAction: "block"` also refuses a request carrying an instruction threat (the `promptScanAction` list), and `samplingContextAction: "block"` refuses any `includeContext` other than `"none"`. A refused JSON-RPC request is answered to the server with JSON-RPC error `-1` (the spec's "User rejected sampling request") — the gateway POSTs it upstream on the client's own session — and the client gets a `notifications/message` from logger `moorai` in its place; a refused `inputRequests` result becomes an `isError` tool result (`tools/call`) or a JSON-RPC error (the others). Every `inputRequests` entry is read, and strings in arrays (stop sequences, an `enum`) are scanned. The text is bounded as a tool result's is (64 KB, 512 objects, depth 8); a request with text past those bounds is not judged. A request that could not be judged follows `failMode.mcpGateway` (open: forwarded, and a request past the bounds is reported as `MCP: sampling request not fully evaluated`, threat id 0, Medium; closed: refused); a finding in the part that was read still refuses it. Coach mode never refuses. Alerts at stage `sampling` carry the threat id, category, a keyed hash of the matched span, `samplingKind`, `samplingShape` and `includeContext`, never the prompt; the `includeContext` alert has threat id #91. In the `inputRequests` shape, findings on a forwarded result are reported by the result stage, which scans the same result. **Limits:** the client's answer (the model's completion or the user's input) is not scanned on its way back to the server; there is no per-server rate or token budget for sampling; a line over 1 MB is forwarded unscanned, as for tool results; MoorAI does not show the user the request to approve it — that stays the client's job.
+- **MCP sampling and elicitation requests** — the MCP stdio guard and the HTTP MCP gateway judge a server's own request to the client before the client sees it: `sampling/createMessage` (run this prompt on your model) and `elicitation/create` (ask your user this), in both shapes the MCP specification has used — a JSON-RPC request from the server (2024-11-05 to 2025-11-25) and `result.inputRequests` in the result of a `tools/call`, `resources/read` or `prompts/get` (2026-07-28). The system prompt, message text, request-scoped tool definitions and stop sequences of a sampling request, and the message, URL and requested schema of an elicitation, are scanned by the tool-result engine at stage `file` (prompt injection, tool and rules poisoning, invisible text, secrets, personal data). `includeContext` `"allServers"` (Medium) or `"thisServer"` (Low) is reported as a request for the client's context. **Report-first:** the request is forwarded and reported unless a finding's action resolves to block / kill; a signed policy's `samplingScanAction: "block"` also refuses a request carrying an instruction threat (the `promptScanAction` list), and `samplingContextAction: "block"` refuses any `includeContext` other than `"none"`. A refused JSON-RPC request is answered to the server with JSON-RPC error `-1` (the spec's "User rejected sampling request") — the gateway POSTs it upstream on the client's own session — and the client gets a `notifications/message` from logger `moorai` in its place; a refused `inputRequests` result becomes an `isError` tool result (`tools/call`) or a JSON-RPC error (the others). Every `inputRequests` entry is read, and strings in arrays (stop sequences, an `enum`) are scanned. The text is bounded as a tool result's is (64 KB, 512 objects, depth 8); a request with text past those bounds is not judged. A request that could not be judged follows `failMode.mcpGateway` (open: forwarded, and a request past the bounds is reported as `MCP: sampling request not fully evaluated`, threat id 0, Medium; closed: refused); a finding in the part that was read still refuses it. Coach mode never refuses. Alerts at stage `sampling` carry the threat id, category, a keyed hash of the matched span, `samplingKind`, `samplingShape` and `includeContext`, never the prompt; the `includeContext` alert has threat id #91. In the `inputRequests` shape, findings on a forwarded result are reported by the result stage, which scans the same result. **The client's answer** — the model's completion (`CreateMessageResult`) or the user's input (`ElicitResult`) — is judged on its way back to the server ([`mcp-proxy/sampling-response.mjs`](mcp-proxy/sampling-response.mjs)), in both shapes: the client's JSON-RPC response (to 2025-11-25) and `params.inputResponses` on the retried `tools/call`, `resources/read` or `prompts/get` (2026-07-28). Its `content` gets the outbound-argument data-loss check: the data-loss detectors (secrets, personal data, cards and regulated data, source / IP), base64 and `data:` content decoded and scanned, a labelled file's sensitivity label against `labelPolicy` "send", and the over-sharing signal (#92). **Report-first:** forwarded and reported unless a finding's action resolves to block / kill (or an over-sharing or label rule blocks); a signed policy's `samplingResponseAction: "block"` refuses an answer with any finding. A refused response reaches the server as JSON-RPC error `-1` on the request's id, and the stdio guard writes the client a `notifications/message`; the HTTP gateway forwards the error upstream but cannot notify the client, because the client's POST of a response is answered `202` with no body. A refused retry is not sent: the client gets an `isError` tool result (`tools/call`) or a JSON-RPC error. An answer that could not be judged, or that holds encoded content past the decode caps, follows `failMode.mcpGateway`. Alerts at stage `sampling-response` carry the threat id, category, a keyed hash of the match, `samplingKind` and `samplingShape`. **Sampling budget:** `samplingBudget` (`{ action, maxRequests, maxTokens, windowMin }`, default `report`, 30 requests and 100,000 stated `maxTokens` in 60 minutes) counts a server's sampling requests per session — the stdio guard process, or the gateway route and `Mcp-Session-Id` — and reports the first time each limit is passed (#97 `MCP: sampling budget exceeded`, stage `sampling`, Medium, with the counts); `action: "block"` refuses every sampling request past a limit as a refused request above; `false` or `"off"` turns it off. Elicitation is not counted. **Limits:** #65 local secret values are not matched in an answer; a client that answers a sampling request outside the guard or gateway (its own connection to the server) is not seen; the budget counts the `maxTokens` a request states, not the tokens the client's model generated; a line over 1 MB is forwarded unscanned, as for tool results; MoorAI does not show the user the request to approve it — that stays the client's job.
 - **Installed IDE-extension scanning** — `moorai-ide-extensions` (and the AIBOM's `ideExtensionScan`) reads the extensions installed in VS Code, Insiders, VSCodium, Cursor, Windsurf, Kiro and VS Code Server, and JetBrains plugins (id and version from `META-INF/plugin.xml` in the plugin jar). VS Code-family extensions are checked for a published malicious id and version (`ide-ext-known-malicious`: 14 OSV malicious-package records for Open VSX and Marketplace extensions, and Amazon Q 1.84.0, CVE-2025-8217), a run of 16 or more invisible Unicode selectors in a bundled script (`ide-ext-invisible-code`, the GlassWorm loader technique), a near-miss of a widely installed id (`ide-ext-typosquat`), a widely installed name under another publisher (`ide-ext-publisher-impersonation`) and a `.vsix` side-load recorded in `extensions.json` (`ide-ext-sideloaded`). Report-only; output is editor, id, version, AI flag, codes, risk and advisory ids, never a path or file contents. Reads are bounded (8 MB per file, 48 MB per extension, 512 MB per run) and a skipped file is reported as `truncated`. JetBrains plugins are inventoried and classified as AI or not; the other checks cover the VS Code family.
+- **Persistence footholds, on every write surface** — a cron table, a launch agent or daemon plist, an editor extension or plugin directory (VS Code and its forks, JetBrains, Eclipse), or a shell startup file given a fetch, a password-capturing `sudo`/`ssh` alias, a temp directory on `PATH`, a preload library or a temp-dir launch is held for approval (#46, or #57 for an extension), whether the agent writes it with Bash or PowerShell (`cp`, `ln`, `curl -o`, `defaults write`, `PlistBuddy`, `launchctl submit`, `sed -i`, `Register-ScheduledTask` …), the Write / Edit / MultiEdit tools, or an MCP filesystem server. A startup-file write is judged on the lines it adds, so tool-init lines (`eval "$(pyenv init -)"`) and ordinary aliases pass. A CI/CD definition a shell command or an MCP write poisons gets the same report-only #32 check as a Write, now over more pipeline formats and step shapes (`bash <(curl …)`, `toJSON(secrets)`, a re-encoded secret, a GitLab job token sent off-host). Not judged: writes through an interpreter or a run-time path, and indirect pipeline poisoning through the scripts a pipeline runs. Details: `docs/DETECTION_ENGINE.md` "Persistence footholds inside #46".
 - **Browser Guard, store build and managed install** — the MV3 extension in [`browser-ext/`](browser-ext/) now has store icons, a managed-storage schema (`serverUrl`, `installToken`, `mode`, `reportEnabled`, `lockSettings`; a managed value wins over the user's), a background worker that posts the content-free alerts (a content script's fetch runs under the page's origin, so it could not reach a console), store listing and privacy text, `scripts/browser-ext-package.mjs` (deterministic store zip, or a self-hosted build carrying the console origin) and Chrome/Edge force-install templates in [`browser-ext/policy/`](browser-ext/policy/) (macOS `.mobileconfig`, Windows `.reg`, Linux JSON, ADMX/ADML, Intune steps) rendered by `scripts/browser-ext-policy.mjs --id <id>`. Publishing to the Chrome Web Store and Edge Add-ons is still to do, so the store id does not exist yet.
 - **Static model-file scanning** — `moorai-model-scan` inspects pickle / PyTorch, Keras, TensorFlow SavedModel, ONNX, GGUF and SafeTensors files without loading them: dangerous pickle imports, Lambda-layer bytecode, Python-calling TF ops, custom ONNX op domains and escaping external-data paths, GGUF chat templates that reach Python internals or carry instructions, malformed SafeTensors headers. Model downloads an agent runs are reported (#76) and scanned in the background, and the local model stores can be scanned on the daily posture run. Static only: input-triggered backdoors and trojaned weights are out of reach. See [Model file scanning](#model-file-scanning).
 - **Model provenance pinning** — the administrator lists the sha256 of each approved model file (`modelPins`, signed policy or admin binding) and picks `modelPinMode` `report`, `ask` or `block`. A model file that is not on the list is `not-approved` in the background scans, and an agent's `llama-server -m`, `vllm serve`, `ollama run` / `ollama create`, or Python load of a local model file that is not pinned is reported, held or denied. A pin proves which file runs, not that the file is free of a backdoor. See [Model provenance pinning](#model-provenance-pinning).
@@ -436,9 +437,10 @@ node cli/moorai-hook.mjs install                                             # b
 
 **Which tools the hook actually sees.** `PRETOOL_MATCHERS` in
 [`cli/moorai-hook.mjs`](cli/moorai-hook.mjs) is the single source of truth, and it registers
-`Read` · `Bash` · `PowerShell` · `mcp__.*` · `Agent` · `Task` · `Write` · `Edit` · `MultiEdit` · `NotebookEdit` · `WebFetch` · `ReadMcpResourceTool`
+`Read` · `Bash` · `PowerShell` · `Monitor` · `mcp__.*` · `Agent` · `Task` · `Write` · `Edit` · `MultiEdit` · `NotebookEdit` · `WebFetch` · `ReadMcpResourceTool` · `Grep`
 (`Agent` is Claude Code's current name for the sub-agent tool; `Task` is the older one; `ReadMcpResourceTool` is
-Claude Code's MCP `resources/read`, counted toward MCP data harvesting and not content-scanned).
+Claude Code's MCP `resources/read`, counted toward MCP data harvesting and not content-scanned; `Grep` is
+judged for credential access only, below).
 The write family scans at the **`output`** stage, deliberately not `file`: the file stage pulls in the
 71-detector injection family, and an agent writing a doc that quotes *"ignore all previous instructions"*
 is a doc, not an attack. Existing installs converge on the current matcher list on ordinary invocations —
@@ -448,6 +450,54 @@ hook treats exactly as `Bash` (Cursor already rewrites the registered `Bash` mat
 extra matcher is registered). A `Read` is also checked against #55 by **path**, so reading a `.env` —
 relative, absolute or `~/…`, including `.env.local` / `.env.production` — gets the same `ask` as
 `cat .env`; `.env.example` / `.env.sample` / `.env.template` are not flagged.
+
+**Credential access, read structurally (#55).** The credential locations are one rule set
+([`data/cred-paths.js`](data/cred-paths.js)), matched by the end of the path with `\` read as `/`, so a
+Windows path, `$env:USERPROFILE\…` and a path with spaces read the same: env and package-registry files,
+cloud CLI credential and token stores (`gh`, Docker, gcloud, Azure, AWS SSO cache, kubeconfig, Terraform,
+Cargo, RubyGems, rclone, the Claude Code, Codex, Gemini and Copilot sign-in files, Vercel, Netlify, Fly,
+Wrangler, Supabase, Firebase), private keys (anything in `~/.ssh` but `*.pub`, `known_hosts`, `config` and
+`authorized_keys`; `*.key`, `*.p12`, `*.pfx`, `*.ppk`, `*.jks`, `*.keystore`, `*.pem` named for a key,
+GnuPG secret keys, `/etc/ssl/private`, SSH host keys), Chromium, Chrome, Edge, Brave, Vivaldi, Opera, Arc and
+Firefox login, cookie and key stores on macOS, Linux and Windows, Safari's cookie file, the macOS keychain
+database, and the password-hash stores (`/etc/shadow`, `/etc/gshadow`, `/etc/master.passwd`, the macOS
+`dslocal` user records; `/etc/passwd` holds no hash and is not one). A `Read`, a path a `PowerShell` command
+reads and a file an MCP argument names are checked against it. A `Bash` or `PowerShell` command is read by
+[`data/cred-access.js`](data/cred-access.js) as the shell runs it (quoting, pipes, `sudo`, `sh -c`,
+`pwsh -Command`): any command that takes one of those files as an argument or a `<` redirect asks (`jq`,
+`awk`, `sed -n`, `grep`, `cp`, `scp`, `tar`, `openssl … -in`, `sqlite3`, `python3 -c "open('…')"`), as does
+archiving, copying or searching with lines shown (`grep -r region ~/.aws`; `grep -rl` lists names only and does
+not ask) `~/.ssh`, `~/.aws` and the other credential directories. Commands that cannot show the
+content do not (`ls`, `stat`, `chmod`, `rm`, `mv`, `tee`, `echo`, `source`, `ssh-add`, `ssh-keygen`,
+`grep -q`, `sed -i`), and neither does a file given to a flag that uses it (`ssh -i`, `--kubeconfig`,
+`--env-file`, `curl --key`, `openssl -inkey`, `docker build --secret id=…,src=…`). Commands that print a
+stored secret ask too: `security find-generic-password` / `find-internet-password` / `dump-keychain` /
+`export` of private keys, `docker-credential-* get`, `git credential fill`, `keyring get`, `secret-tool
+lookup`, `gpg --export-secret-keys`, `certutil -exportPFX`, `Export-PfxCertificate`, `gh auth token`,
+`az account get-access-token`, `Get-AzAccessToken`, `gcloud auth print-access-token` /
+`print-identity-token`, `aws configure get` of a secret and `aws configure export-credentials`,
+`kubectl config view --raw`, `heroku auth:token`, `vault print token`, `getent shadow`, `unshadow` and
+`dscl … ShadowHashData`; a token piped straight into a registry `login --password-stdin` does not. A search
+for secrets or key files rooted at `/`, a home directory, the users root or `/etc` asks (`grep -r password ~`,
+`rg -i api_key /Users/me`, `find / -name '*.pem'`, `Get-ChildItem -Recurse -Include *.pfx C:\`); the same
+search in a project does not. Shell history asks only when it is searched for a secret word (`grep`, `rg`,
+`awk`, `Select-String` on the history file or on `(Get-PSReadLineOption).HistorySavePath`,
+`history | grep -i password`); reading a history file whole is ordinary agent work and is not judged, and
+any secret it brings in joins the #65 local secret-egress check. A file whose first line is a PEM, OpenSSH,
+PGP or PuTTY private-key header asks on a `Read`, a `cat` or an MCP read whatever it is named. `Grep` is
+registered too: it reads what it searches, so a `Grep` of a credential file, of a credential directory that
+shows lines (`output_mode: "content"` or a context option, whatever the pattern) or looks for a secret word, of
+a history file for a secret word, or of a home or root directory for secrets or key files asks. The path is
+judged as written and as it resolves (`~`, a path relative to the working directory, `..`, and a symlink when
+it exists). Any other `Grep` is allowed unread as before, at the cost of one hook process per call.
+A command that reaches a cloud metadata endpoint (`cloud-metadata-access`) is also caught when the address
+is written into a wildcard-DNS or rebinding name (`169.254.169.254.nip.io`, `169-254-169-254.sslip.io`,
+`a9fea9fe.nip.io`, and the same under xip.io, traefik.me, rbndr.us and 1u.ms); any other name that resolves
+to a metadata address is refused only by the egress proxy, by the address it resolves. Limits: a program or script file the agent runs is not read, so credential access inside it is not seen
+(the #65 egress check and the egress rules still apply to what it sends); Windows Credential Manager
+(`cmdkey`, `vaultcmd`, `PasswordVault`) is not covered; a path built at run time (`$(…)`, a variable) is not
+resolved; `cred-file-access`'s pattern on `.ssh/id_<type>` still fires on a key that is only used
+(`chmod 600 ~/.ssh/id_rsa`, `ssh -i ~/.ssh/id_rsa`).
 
 **PowerShell.** Claude Code on Windows has a `PowerShell` tool, and it is the only shell when Git Bash is
 absent. `PreToolUse` and `PostToolUse` both match it, and existing installs converge on the new matchers.
@@ -564,7 +614,7 @@ one extra hook process per `Bash`, MCP or sub-agent call, 136 ms at p50 and 159 
 time per 64 KB for the new detectors. Limits: output beyond 64 KB is not scanned, the instruction detector
 is lexical and English, `cat .env` reports at both `PreToolUse` and `PostToolUse`, the other agents'
 adapters still forward only web results, and a `Read`'s file content keeps the approval categories.
-`Glob` and `Grep` remain unregistered. Full stage-and-surface map:
+`Glob` remains unregistered, and `Grep` is judged only for credential access (above). Full stage-and-surface map:
 [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6–7.
 
 **Mask instead of block.** An org can set the policy action `mask` for a data-tier threat (#15 PII, #39
@@ -1479,8 +1529,8 @@ key id, the session start and the token's issue and expiry times ([`cli/agent-se
 - **At the gateway and the model proxy.** The header is verified against this device's key and never forwarded
   upstream. The identity rides on every alert the request raises as `agentSession: { id, status, agentName }`;
   `status` is `verified`, `expired`, `revoked`, `invalid`, `foreign` (another device's key) or `absent`. Anything
-  but `verified` raises an `Agent identity: <status>` alert (reason `AGENT_IDENTITY`), once per process per
-  session and status.
+  but `verified` raises an `Agent identity: <status>` alert under rule #94, Agent request without a valid
+  session identity (reason `AGENT_IDENTITY`), once per process per session and status.
 - **Signed policy.** `agentIdentity: { mode, maxTokenSeconds, maxSessionSeconds }`: `report` (the default)
   records and refuses only a revoked session; `require` also refuses a request with no identity, or one that is
   expired, invalid or foreign (401); `off` ignores the header. `revokedAgentSessions` (served by the console)
@@ -1499,6 +1549,63 @@ sees every token as `foreign`. In report mode a request with no identity is not 
 header for Claude Code only (`ANTHROPIC_CUSTOM_HEADERS`); another agent gets the token in `MOORAI_AGENT_IDENTITY`
 and must send it itself. The live checks were against the real console and gateway processes with the CLI
 making the requests; a live Claude Code session running the `headersHelper` was not observed.
+
+**Framework credits.** #94 credits OWASP MCP07 (Insufficient Authentication & Authorization) and ASI03
+(Identity and Privilege Abuse), both bounded: the gateway and the model proxy verify the session token per
+request and refuse a revoked session, and under `require` one that is absent, expired, invalid or foreign.
+There is no mutual TLS, no per-tool or per-role authorization, the MCP server's own authorization is not seen,
+and any process of the same OS user can mint a token. It also credits MITRE ATLAS AML.T0132 (Misconfigured or
+Publicly Exposed AI Services), bounded to the gateway, and the model proxy in `--mode enforce`, under `require`. The MCP gateway's
+OAuth bearer-token checks (`mcpOAuth`) still post threat id 0 and are not part of these credits.
+
+### Owner sign-in (moorai-identity login)
+
+`moorai-identity login` binds the person who signs in at the company identity provider (OpenID Connect) to this
+device's key, so the agent sessions started on it name a human owner. The console administrator configures the
+provider once per tenant (console "Owner sign-in": issuer, client id, an optional client secret, scopes, an optional
+email-domain list, how many days a binding lasts). The console is the OAuth client: it fetches the provider's
+discovery document (the `issuer` in it must equal the configured issuer), talks to the provider's endpoints, verifies
+the ID token (signature with a key from the provider's JWKS, `iss`, `aud`, `exp`, `iat` within 10 minutes, `nonce`
+for the browser flow; `none` and HMAC algorithms refused) and binds `iss` + `sub` to the device key that signed the
+sign-in requests. No client secret, device code, ID token or access token reaches the device
+([`cli/owner-login.mjs`](cli/owner-login.mjs), console `server/owner-idp-*.js`).
+
+- **Device code (default).** The OAuth 2.0 device authorization grant (RFC 8628): the CLI prints the provider's
+  verification URI and a user code, the person enters it in any browser, and the CLI waits while the console polls
+  the provider no faster than the interval it names (5 s more after `slow_down`).
+- **Browser (`--browser`).** The authorization code grant with PKCE (RFC 7636, S256) and a loopback redirect
+  (RFC 8252 §7.3): the CLI listens on `http://127.0.0.1:<random port>/callback`, opens the provider's authorization
+  page with a `state` and a `nonce` (`--no-open` prints the URL instead), checks `state` on the callback and sends the
+  code, the verifier, the redirect URI and the nonce to the console, which redeems the code.
+- **What the device keeps.** `~/.moorai/agent-owner.json` (mode 0600): an owner assertion the console signs with the
+  tenant's policy key, naming an owner id (`own-` + 16 hex, a hash of tenant, issuer and subject), this device key's
+  id and an expiry (`bindingDays`, default 30). `moorai-identity whoami` checks it with the key that verifies this
+  device's policy (the anchor, else the pin); `moorai-identity logout` unbinds the key on the console and deletes
+  the file. Each request to the console is signed with the device key over the operation, the tenant, the key id,
+  the flow id or a hash of the code, and a time within 5 minutes.
+- **On session tokens.** `run`, `headers` and `mint` put the owner id into new tokens as the claim `own`. The MCP
+  gateway and the model proxy check that claim against the device's assertion and record
+  `agentSession.owner: { id, status }` on the request's alerts: `verified`, `mismatch` (the assertion names another
+  owner), `revoked` (the console unbound the key, or a later sign-in on it replaced the assertion: the signed
+  policy's `revokedOwnerAssertions`) or `unverified` (no assertion, an unpinned device, a bad signature, another key
+  or tenant, expired). Anything but `verified` raises an `Agent owner: <status>` alert (reason `AGENT_IDENTITY`).
+  The console shows each session's signed-in owner (from the binding when the session registered) and the owner
+  its tokens carried.
+- **Signed policy.** `agentIdentity.requireOwner: true` with `mode: "require"` refuses (401) a request whose
+  identity verified but whose owner did not (or that carries none): at the gateway, and at the model proxy in `--mode enforce`.
+- **Measured.** One live run (a scratch script: the real console, a local fake OpenID provider, the real CLI and
+  the real gateway at its default refresh): sign-in by device code in 1.4 s, the session registered with the owner
+  attached, and the gateway's `Agent owner: revoked` alert reached the console 51.2 s after the administrator
+  unbound the key.
+
+**Limits.** The device key and the assertion are readable by every process of the device's OS user, so a binding
+attributes that user's agent sessions to the person; it does not tell the agent apart from another process of the
+same user. The device grant can be phished (RFC 8628 §5.4): a person who enters a user code someone else started
+binds that person's key. Nothing deprovisions a binding when the person leaves the company (no SCIM or SSF/CAEP):
+it lasts until it expires or an administrator unbinds it. The owner is attribution and, with `requireOwner`, a gate
+on gateway and model-proxy requests; there is no per-tool authorization by person, no token exchange at the
+provider, and the hook does not read the owner. Pending device sign-ins live in the console process's memory. Tested
+against a local fake provider only, on macOS; no real identity provider was used.
 
 ### Air-gapped deployment
 
@@ -1673,7 +1780,11 @@ unenrolled device the claim check below shows the user a `systemMessage` at `Sto
 - **Session risk and the circuit breaker** (*What it does*, above) keep their state in
   `~/.moorai/session-risk.json` and `circuit-breaker.json`, hashed under a device-local `session.key` (mode
   0600): keyed hashes, counts and timestamps for at most 32 sessions, for 24 hours. Defaults: threshold 12,
-  window 30 min, score half-life 15 min, sequences within 10 calls, a mass read at 30 files. The circuit
+  window 30 min, score half-life 15 min, sequences within 10 calls, a mass read at 30 files. The split and
+  staging sequences (`split-out`, `stage-out`) read the command as the shell runs it (data/exfil-channels.js);
+  `gh repo create … --push` counts as outbound. Not seen: a split or a copy written in a script file the agent
+  then runs, PowerShell chunking (no built-in cmdlet; a loop over a byte stream is not read), `head -c` /
+  `tail -c` slices, and a sensitive file reached through a variable or a glob that does not name it. The circuit
   breaker keys each session and sub-agent separately, so parallel sub-agents do not add up into one loop.
   On scripted sessions it raised no alert on test-fix or build-watch loops and caught 3 of 3 runaway loops.
   Call-rate and call-budget trips (`ratePerMin`, `maxCalls`) are off unless an org sets them: in a
@@ -2038,7 +2149,8 @@ takes that verdict; writes are never held. In the hook the same reads also count
 read. The hook measures a result as the length of the hook input that carries it; the guard as the length of the
 response line, including a line too large to scan. The hook does not measure a resource's size (no
 `PostToolUse` matcher is registered for `ReadMcpResourceTool`). The guard counts per process, which is one
-client connection to one server.
+client connection to one server. Through this check #59 credits MITRE ATLAS AML.T0085 (Data from AI
+Services), bounded to reads through MCP tools per server and session.
 
 | Key | Values | Default |
 |---|---|---|
@@ -2100,6 +2212,22 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
 - **A public out-of-band collection host** (interactsh, Burp Collaborator, webhook.site, Pipedream,
   Request Catcher, Beeceptor, Canarytokens): data sent is #78 (High), a plain GET or DNS lookup is #79
   (Medium). Both report by default; set them in `threatPolicy` to ask or block.
+- **A post to a paste site, a gist or a snippet** (#95, ATT&CK T1567.003; Medium, reports by default): a Bash or
+  PowerShell command that sends data to pastebin.com, paste.ee, hastebin.com, ghostbin, dpaste, termbin
+  (`… | nc termbin.com 9999`), rentry, ix.io, sprunge.us or paste.rs, creates or extends a GitHub gist
+  (`gh gist create`, `gh gist edit --add`, `gh api gists -f …`, a POST or PATCH to api.github.com/gists) or
+  creates a GitLab snippet (`glab snippet create`, a POST to `/api/v4/…/snippets`). Reading a paste, `gh gist
+  view` or `gh gist list` is not a send. The Agent SDK decides the same command the same way.
+- **A push to a repository the project does not use** (#96, ATT&CK T1567.001; Medium, reports by default): `git
+  push <url>` (or `--repo=<url>`) to a destination that is none of the project's remotes, a push to a remote
+  the agent added or re-pointed in the same command or an earlier call of the same session (`git remote add`,
+  `git remote set-url`, `git config remote.<name>.url`; a bare `git push` after `origin` was re-pointed), and
+  `gh repo create … --push`. The project's remotes are read from the git config of the directory the command
+  runs in (`-C`, an earlier `cd`; a worktree's common config). A push to a local path, `file://` or loopback
+  is silent, and so is one to a destination on the signed policy's `codeRepoAllow` (`"git.acme.com"`,
+  `"github.com/acme"`, `"github.com/acme/tools"`, `"*.acme.com"`). The session record
+  (`~/.moorai/repo-push.json`, 0600) holds keyed hashes of session + repository root + remote name, 256 entries
+  for 24 h; deleting it loses the record. The Agent SDK judges one command, without that record.
 - **An upload to public cloud storage** (#86, Medium, reports by default): curl, wget or
   `Invoke-WebRequest` sending a body, `-T` or a non-GET method to an S3, Azure Blob, Google Cloud Storage,
   Alibaba OSS, Cloudflare R2, Tencent COS, Huawei OBS, DigitalOcean Spaces, Backblaze B2 or Wasabi
@@ -2108,8 +2236,12 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
   to ask or block; the setting covers every bucket, your own included (an `egressRules` allow does not
   exempt one).
 
+Set the paste and push rules in `threatPolicy` to ask or block.
+
 Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, hosts
-outside the list, and uploads through the providers' own CLIs (`aws s3 cp`, `gsutil cp`, `az storage blob
+outside the list, paste sites and gists reached through an MCP tool or WebFetch, pushes through a git
+hosting API or an MCP tool, `url.<base>.insteadOf` rewrites (a URL is compared as written), and uploads
+through the providers' own CLIs (`aws s3 cp`, `gsutil cp`, `az storage blob
 upload`, `rclone`), which write with the account the user configured. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
 ### Weakening oversight (#84)
@@ -3228,16 +3360,49 @@ hook reads it only from a policy whose signature verifies ([`cli/session-stop.mj
   ran the hook (macOS and Linux; walked past at most four hook shells and a shim's node, and only when it is an
   AI CLI or node, never a terminal or IDE). A device stop also writes the desktop host's `kill-session` sentinel,
   which ends the agent the MoorAI desktop app runs.
-- **Latency.** The hook learns of a stop on its next policy fetch, on the first hook call after the cached
-  policy is 60 seconds old. Measured against the real console: a stop created 0.6 s earlier was applied by that
-  first call (787 ms including the fetch); a call inside the cache window still ran. An idle agent is stopped when
-  it next calls a tool or submits a prompt.
-- **Limits.** Windows: calls are denied, the agent process is not signalled. A stop does not block the device's
-  network, and the model proxy, MCP gateway and egress proxy do not read it. A device that cannot reach the
-  console does not learn of a stop. A same-user process that rewrites the policy cache and the device's advisory
-  policy mark can keep serving a policy signed before the stop until that policy reaches its maximum age (15
-  minutes by default), unless an MDM-installed root-owned policy mark is present.
-  Tests: `test/session-stop-hook.test.mjs`.
+- **Stop channel (under a second).** A console that serves it (v0.104.0+) names `stopChannel` in the signed
+  policy. While it does, the hook keeps one stop watcher per device user running
+  ([`cli/stop-watch.mjs`](cli/stop-watch.mjs), started detached by the first call that finds none, one at a time by
+  `~/.moorai/stop-watch.lock`) and records once per session which agent process runs it
+  (`~/.moorai/stop-sessions/`). The watcher holds a long-poll to `GET /api/agents/stop-channel` (install token, the
+  keyed actor, 25 s); creating or lifting a stop answers it at once with the actor's stop document, signed with the
+  policy key in its own form (`moorai-stops|v1|tenant|iat|digest`, so it can never pass as a policy). The watcher
+  verifies it with the device's policy anchor or pin, writes it to `~/.moorai/stop-channel.json` (removed when it
+  holds no stop), sends `SIGTERM` to the recorded agent process of every live session the stop names (only while
+  that pid is still the same process: start time and name), posts the `SESSION_KILL` acknowledgement
+  (`tool` `stop-watch`), and for a device stop drops the desktop host's `kill-session` sentinel. The hook reads the
+  file on every `PreToolUse` and `UserPromptSubmit` and denies from it without waiting for a policy fetch
+  ([`cli/stop-channel.mjs`](cli/stop-channel.mjs)).
+- **Trust model.** The file, the watcher and the session records are in the user's state directory and run as the
+  user, so they can only ADD stops: the hook applies the file's stops only when its signature verifies under the
+  policy's keys, it names this tenant and this actor, and it was issued after the policy being enforced, and never
+  removes or shortens a stop the verified policy carries. A lift comes from the signed policy (a document older than
+  the policy is ignored, so a stale file stops applying at the next policy fetch). A same-user process can take the
+  fast path away (kill the watcher, delete the file); the stop then reaches the agent the old way, below.
+- **Latency.** Measured against the real console, with the real hook and watcher, on a Mac running other work
+  (load average 40 to 66): from the stop request to `SIGTERM` of an idle agent, 13 ms p50, 27 ms p95, 97 ms max
+  (n = 25); of an agent calling tools back to back, 14 and 122 ms p50, 41 and 457 ms p95, 856 ms max in two runs of
+  25 through the command hook, 15 and 17 ms p50, 60 ms max in two runs through `moorai-hookd`. In 99 of those 100
+  runs every call that started after the stop was denied; the one call let through started 542 ms after the stop,
+  before the watcher (at that load, `SIGTERM` at 385 ms) had written the file. The first denied call ended 0.6 to
+  2.1 s after the stop (p50 per run): the call already running when the stop arrived, then the denied call, which
+  posts the acknowledgement and walks to the agent process (1.0 to 1.3 s p50 at that load). Without the stop channel
+  (an older console, a dead watcher, a deleted file) the hook learns of a stop on its next policy fetch, on the first
+  hook call after the cached policy is 60 seconds old (a stop created 0.6 s earlier was applied by that call, 787 ms
+  including the fetch), and an idle agent is stopped when it next calls a tool or submits a prompt.
+- **Cost per call.** Only while the policy names `stopChannel`: the module is loaded (0.8 ms p50) and the step runs
+  (one failed open of the stop file, a `stat` of the lock, an `exists` of the session record: 44 µs; with a stop
+  file present, its signature check: 0.4 ms). Allowed `PreToolUse` calls through the command hook, 200 each,
+  interleaved with the v1.46.1 hook against the same console at load 50 to 60: 392 vs 380 ms p50, 416 vs 412 ms
+  mean, 608 vs 614 ms p95, no difference outside the noise. Once per session the agent process is found and recorded
+  (the same parent walk as the stop's `SIGTERM`, and one `ps` for its start time on macOS).
+- **Limits.** Windows: calls are denied, the agent process is not signalled (no session record has a pid). Server
+  mode (CI, containers) does not run the watcher. A watcher that died is restarted by the first hook call 45 s after
+  its last heartbeat. A stop does not block the device's network, and the model proxy, MCP gateway and egress proxy
+  do not read it. A device that cannot reach the console does not learn of a stop. A same-user process that rewrites
+  the policy cache and the device's advisory policy mark can keep serving a policy signed before the stop until that
+  policy reaches its maximum age (15 minutes by default), unless an MDM-installed root-owned policy mark is present.
+  Tests: `test/session-stop-hook.test.mjs`, `test/stop-channel.test.mjs`.
 
 ### Approval receipts
 
@@ -3707,7 +3872,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-helper status [--json]`** reports whether the privileged helper `moorai-guardd` is installed, running and answering with a valid device-key proof, as a content-free status (`healthy`, `not-ready`, `installed-not-running`, `untrusted`, …). See [Privileged helper (moorai-guardd)](#privileged-helper-moorai-guardd).
 - **`node cli/moorai-windows-validate.mjs [--out <file>] [--strict] [--require-windows] [--only <ids>] [--json]`** runs the agent's enforced surfaces on the machine it is started on (the hook on Bash and the `PowerShell` tool, the hook launched through `powershell.exe`, the MCP gateway by hook and over HTTP, egress rules in the hook and the egress proxy, MXC detection and enforcement) against a loopback console and throwaway home directories, and writes a content-free report: probe ids, outcomes from a fixed list, alert counts, the Windows build. It is built for Windows; on macOS and Linux the three Windows-only probes are skipped, and `--require-windows` turns a skip into the verdict `incomplete`. It is not a package bin: run it from the agent tree. It has run on macOS only so far, not yet on Windows. See [Windows runtime validation](docs/CAPABILITY_SPEC.md#windows-runtime-validation-moorai-windows-validate).
 - **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. `--pin <sha256>` adds the not-approved verdict for files off the approved list. See [Model file scanning](#model-file-scanning) and [Model provenance pinning](#model-provenance-pinning).
-- **`moorai-identity run|headers|mint|verify`** starts an agent under a signed agent session identity and mints its short-lived tokens for the MCP gateway and the model proxy (`run [--agent <name>] [--session-max <s>] -- <command>`, `headers [--ttl <s>] [--allow-remote]` for an MCP `headersHelper`, `mint [--new] [--json]`, `verify [<token>]`). Exit 0 done (`verify`: verified), 1 `verify` not verified, 2 usage or no device key; `run` exits with the command's code. See "Agent session identity (moorai-identity)".
+- **`moorai-identity run|headers|mint|verify|login|whoami|logout`** starts an agent under a signed agent session identity and mints its short-lived tokens for the MCP gateway and the model proxy (`run [--agent <name>] [--session-max <s>] -- <command>`, `headers [--ttl <s>] [--allow-remote]` for an MCP `headersHelper`, `mint [--new] [--json]`, `verify [<token>]`), and signs the device's owner in at the company identity provider (`login [--browser] [--no-open] [--timeout <s>] [--json]`, `whoami [--json]`, `logout`). Exit 0 done (`verify`: verified; `whoami`: the assertion verifies), 1 `verify` not verified, `login` not bound, `whoami` not verified, 2 usage, no device key or not enrolled; `run` exits with the command's code. See "Agent session identity (moorai-identity)" and "Owner sign-in (moorai-identity login)".
 - **`moorai-cloud-setup <copilot-coding-agent|claude-code-web|codex-cloud>`** binds server mode inside a cloud coding agent's setup step (as root; `--install-dir`, `--root` for an image build, `--print-hooks` for the host's hook registration). Exit 0 done, 2 usage or missing binding, 3 host blocked (Codex cloud), 4 token exchange refused. See [`examples/cloud/`](examples/cloud/README.md).
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages (by name, PyPI names compared in their PEP 503 form, and by the exact published SHA-256 of a known-bad artifact or of any extracted file, `data/known-bad-artifacts.js`: `pkg-known-malicious`, block), and a hard-coded fetch from a free throwaway web host such as `tiiny.site`, a paste site or an anonymous tunnel (`pkg-throwaway-host`, a `CAUTION` warning only, never a verdict; the host is matched as a suffix of the parsed hostname against `data/throwaway-hosts.js`, and only in live code that also makes a network call) — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.
@@ -4013,12 +4178,12 @@ complete tool detail, and no argument text reached the console.
 ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
 AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
 and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
-IDE task files. 49 of the 89 rules map to 66 v20 techniques through 95 credits: 3 full, 79 partial and 13
-`none`. 40 rules (data classes, governance, review and model-error risks, deploying an AI agent, an exposed local model server, MCP sampling context, over-sharing to an MCP tool and cascading agent failure) have no ATT&CK counterpart, and each says why.
+IDE task files. 51 of the 93 rules map to 68 v20 techniques through 97 credits: 9 full, 75 partial and 13
+`none`. 42 rules (data classes, governance, review and model-error risks, deploying an AI agent, an exposed local model server, MCP sampling context and sampling volume, over-sharing to an MCP tool, cascading agent failure and an agent request without a valid session identity) have no ATT&CK counterpart, and each says why.
 
-Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
-covered, 56 partial and 13 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
-2 are covered, 54 partial and 2 uncovered; of those 54 partial, 8 are bounded by design and 46 are open gaps. The other 13 are identity, email, endpoint or adversary-infrastructure
+Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 8 are
+covered, 52 partial and 11 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
+8 are covered, 50 partial and none uncovered; of those 50 partial, 12 are bounded by design and 38 are open gaps. The other 13 are identity, email, endpoint or adversary-infrastructure
 techniques that no MoorAI surface sees directly; two of them are partly covered: Financial Theft (T1657), where the
 payment-fraud detector coaches when payment or bank-detail change wording reaches an AI tool, and Steal Application
 Specific Passwords (T1697), where an app password read, typed or sent through an agent, a tool or a model call is kept
@@ -4035,7 +4200,7 @@ whose uncaught forms are either indistinguishable from an agent's legitimate wor
 PowerShell at all; downloading a file; a connectivity check to an ordinary host), or outside anything an
 agent-side hook, proxy or gateway observes (the provider's chat store, AI search engines, a person pasting into
 their own terminal). Every other partial credit is an open gap, either `bound: "gap"` or no field: detection
-MoorAI has not built yet. Ten credits carry the design bound today, and `docs/BENCHMARK.md` reports partial
+MoorAI has not built yet. Fourteen credits carry the design bound today, and `docs/BENCHMARK.md` reports partial
 techniques split into "bounded by design" and "open gap" (`partialDesign` and `partialGap` in
 `docs/benchmark.json`, plus `partialBound` per technique). A technique counts as bounded by design when any of
 its partial credits is, since that credit's uncaught forms contain the technique's.
@@ -4047,8 +4212,8 @@ in `data/threats.json` to get technique ids, coverage and reason. The console's 
 ### MITRE CWE and CAPEC
 
 Every rule in `data/threats.json` carries `cwe` and `capec`, each an array of `{ id, title }`: the CWE
-weakness the threat exploits and the CAPEC attack pattern the threat is. 41 of the 89 rules credit 17 CWE
-entries (46 credits) and 24 credit 19 CAPEC patterns (27 credits). 40 rules credit neither: a person pasting
+weakness the threat exploits and the CAPEC attack pattern the threat is. 43 of the 93 rules credit 17 CWE
+entries (48 credits) and 24 credit 19 CAPEC patterns (27 credits). 42 rules credit neither: a person pasting
 data into an AI tool or relying on a wrong answer exploits no software weakness and involves no adversary, and
 CAPEC 3.9 has no pattern for prompt injection or exfiltration. An empty array is a reviewed "no honest
 mapping" and carries a one-line `cweNote` or `capecNote`. CWE-1426 (Improper Validation of Generative AI
@@ -4283,7 +4448,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 89-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 90-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 

@@ -115,6 +115,11 @@ function flat(cmd, ps, depth, out, scope = "", ids = { n: 0 }) {
   }
   return out;
 }
+// One reading of a command as the segments above (nested scripts expanded in place), for readers outside
+// this file (data/cred-access.js). Never throws.
+export function commandSegments(cmd, ps = false) {
+  try { return flat(String(cmd || ""), !!ps, 0, []); } catch { return []; }
+}
 const PS_HINT = /\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|Start-BitsTransfer)\b|-OutFile\b|-InFile\b/i;
 // Every reading of the command: POSIX always, and PowerShell as well when it carries PowerShell's web
 // cmdlets (a detector sees text without knowing which shell it is for).

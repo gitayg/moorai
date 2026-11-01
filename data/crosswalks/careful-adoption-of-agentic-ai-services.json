@@ -820,13 +820,16 @@
     {
       "id": "design/identity-management/1",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "agent-session-identity",
         "gateway-identity",
-        "model-proxy-identity"
+        "model-proxy-identity",
+        "owner-signin"
       ],
-      "limit": "agent session identities signed with the device's ed25519 key and verified by MoorAI's MCP gateway and model proxy; no managed identity service or identity provider, and the key is not hardware-backed"
+      "limit": "agent session identities signed with the device's ed25519 key and verified by MoorAI's MCP gateway and model proxy; the human owner comes from the tenant's identity provider (OpenID Connect, console-verified) and is bound to the device key; the agent itself has no identity at the provider and the key is not hardware-backed"
     },
     {
       "id": "design/identity-management/2",
@@ -840,12 +843,14 @@
       "status": "not-covered",
       "threats": [],
       "evidence": [],
-      "reason": "no registry of agent identities bound to roles"
+      "reason": "owner bindings name the person per device key; no roles, no reconciliation with the identity provider"
     },
     {
       "id": "design/identity-management/4",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "gateway-identity",
         "model-proxy-identity"
@@ -1076,9 +1081,10 @@
         "operator-stop",
         "kill",
         "host-isolation",
-        "offline-posture"
+        "offline-posture",
+        "stop-channel"
       ],
-      "limit": "an administrator's stop or a kill verdict ends the agent session (SIGTERM on macOS and Linux, the desktop host's agent), macOS isolation is opt-in, and MoorAI itself fails open unless the fail-closed posture is set"
+      "limit": "an administrator's stop ends the agent session within a second on a device holding the stop channel (SIGTERM on macOS and Linux, idle or not), a kill verdict ends it at the call, macOS isolation is opt-in, and MoorAI itself fails open unless the fail-closed posture is set"
     },
     {
       "id": "develop/resilience/2",
@@ -1849,12 +1855,15 @@
     {
       "id": "operate/privileges-and-authentication/5",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "gateway-identity",
-        "model-proxy-identity"
+        "model-proxy-identity",
+        "owner-signin"
       ],
-      "limit": "the MCP gateway and the model proxy verify the caller's agent session identity on every request (require refuses an unverified caller); identity is not checked against user or agent groups"
+      "limit": "the MCP gateway and the model proxy verify the caller's agent session identity on every request, and with agentIdentity require + requireOwner refuse a caller whose session has no verified signed-in owner (401); identity is not checked against user or agent groups"
     },
     {
       "id": "operate/privileges-and-authentication/6",
@@ -1889,7 +1898,9 @@
     {
       "id": "operate/privileges-and-authentication/10",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "arg-scan",
         "policy-signature",

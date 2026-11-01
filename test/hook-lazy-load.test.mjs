@@ -24,7 +24,7 @@ const skip = typeof module.registerHooks !== "function" ? "module.registerHooks 
 const DEFERRED = [
   "cli/mcp-reputation.mjs", "cli/mcp-package.mjs", "cli/quarantine-step.mjs", "cli/quarantine-reader.mjs", "cli/credential-exposure.mjs",
   "cli/mxc-detect.mjs", "cli/local-ai-inventory.mjs", "cli/oversight-disclosure.mjs", "cli/oversight-mcp.mjs", "cli/mcp-file-args.mjs",
-  "data/agent-baseline.js", "cli/transcript-usage.mjs",
+  "data/agent-baseline.js", "cli/transcript-usage.mjs", "cli/stop-channel.mjs",
   ...(WIN ? [] : ["cli/containment-enforce.mjs", "cli/containment-guard.mjs"])
 ];
 

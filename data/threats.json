@@ -1150,7 +1150,7 @@
         {
           "id": "T1677",
           "coverage": "partial",
-          "reason": "a Write/Edit into a CI/CD config adding a fetch-to-shell step, a pipeline-secret exfiltration, or a pull_request_target trigger; report-only"
+          "reason": "CI/CD definitions (GitHub, GitLab, Jenkins, Azure and others) written by Write/Edit, shell or MCP with a step running fetched code, leaking secrets, or pull_request_target; indirect PPE not judged"
         }
       ],
       "stride": "Elevation of Privilege",
@@ -1354,7 +1354,7 @@
         "MCP01"
       ],
       "owaspMcpPartial": {
-        "MCP01": "secret values in prompts and output; token lifetime and storage are not assessed"
+        "MCP01": "secret values in prompts and output, and in the client's answer to an MCP sampling or elicitation request (guard and gateway); token lifetime and storage are not assessed"
       },
       "attack": [
         {
@@ -1651,17 +1651,19 @@
         {
           "id": "T1053.003",
           "coverage": "partial",
-          "reason": "a crontab install or edit, or a write to a system cron location, run through the agent's shell; listing a crontab is allowed"
+          "reason": "crontab edits and writes to any cron table by shell (redirect, tee, cp, mv, ln, rsync, curl), Write/Edit or MCP; not inline interpreter writes, run-time paths or Agent SDK MCP writes"
         },
         {
           "id": "T1543.001",
           "coverage": "partial",
-          "reason": "a plist written into a LaunchAgents or LaunchDaemons folder, or loaded with launchctl, through the agent's shell"
+          "reason": "plists written, copied, linked, fetched or edited in LaunchAgents/Daemons by shell, Write/Edit or MCP; launchctl load and submit; not inline interpreter writes, run-time paths or Agent SDK MCP writes"
         },
         {
           "id": "T1546.004",
           "coverage": "partial",
-          "reason": "a shell rc file written by a command that also fetches or executes; an ordinary alias or PATH edit is not flagged"
+          "reason": "a write to any bash, zsh or fish startup file (shell, Write/Edit, MCP) adding a fetch, decode, capturing alias, temp PATH entry, library preload or temp launch; a Write is judged on lines it adds",
+          "bound": "design",
+          "boundReason": "Developers add tools, aliases and PATH entries to startup files constantly, so only a line that fetches, decodes, captures a password, preloads a library or launches from a temp directory is judged."
         }
       ],
       "stride": "Elevation of Privilege",
@@ -2068,43 +2070,47 @@
       "attack": [
         {
           "id": "T1552.001",
-          "coverage": "partial",
-          "reason": ".env, cloud credential files, .npmrc, .git-credentials, .netrc, .pgpass, kube, docker and gcloud config, and gh CLI hosts.yml"
+          "coverage": "full",
+          "reason": "credential and token files through any reader, Read, PowerShell, MCP file arguments and Grep; credential directories archived or searched; secret searches rooted at a home or root directory"
         },
         {
           "id": "T1552.004",
-          "coverage": "partial",
-          "reason": "SSH private keys read through a tool"
+          "coverage": "full",
+          "reason": "SSH and other private keys by location, extension or private-key header; GnuPG, keychain and certificate-store key exports; key-file searches at a home or root directory"
         },
         {
           "id": "T1555.001",
-          "coverage": "partial",
-          "reason": "security find-generic-password and security dump-keychain through the agent's shell"
+          "coverage": "full",
+          "reason": "security find-generic-password / find-internet-password / dump-keychain / key export, the keychain database file, docker-credential and git credential helpers, keyring"
         },
         {
           "id": "T1003.008",
-          "coverage": "partial",
-          "reason": "reads of /etc/shadow"
+          "coverage": "full",
+          "reason": "the password-hash stores (/etc/shadow, gshadow, master.passwd, spwd.db, macOS dslocal records) read, getent shadow, unshadow, dscl ShadowHashData; /etc/passwd alone holds no hash"
         },
         {
           "id": "T1552.003",
           "coverage": "partial",
-          "reason": "a secret-mining read of ~/.bash_history, ~/.zsh_history or ~/.sh_history (grep for password/token/secret/key)"
+          "reason": "shell and REPL history searched for a secret word (grep, rg, awk, Select-String, findstr, the Grep tool, history | grep)",
+          "bound": "design",
+          "boundReason": "Reading a shell history file whole is ordinary agent work (the user asks what they ran), so only a search of it for a secret is judged; a secret a whole read brings in joins #65 local secret egress."
         },
         {
           "id": "T1555.003",
-          "coverage": "partial",
-          "reason": "a Chrome, Edge, Brave or Firefox Login Data, Cookies, Local State, key4.db or logins.json store read or copied from its profile directory"
+          "coverage": "full",
+          "reason": "Chromium-family, Firefox-family and Safari login, cookie and key stores on macOS, Linux and Windows, read, copied or queried"
         },
         {
           "id": "T1528",
-          "coverage": "partial",
-          "reason": "OAuth/access-token stores read: gh hosts.yml, docker config.json, Azure msal_token_cache, gcloud access_tokens.db"
+          "coverage": "full",
+          "reason": "CLI access-token stores read and token-printing commands (gh, az, gcloud, heroku, vault, git credential, docker-credential), unless piped to a registry login"
         },
         {
           "id": "T1552.005",
           "coverage": "partial",
-          "reason": "a command reaching a cloud or container metadata endpoint (169.254.169.254, metadata.google.internal, 169.254.170.2, and obfuscated spellings); the shared host set is data/metadata-hosts.js"
+          "reason": "a command, fetch or MCP argument reaching a cloud or container metadata endpoint, incl. obfuscated spellings and wildcard-DNS names carrying the address; host set in data/metadata-hosts.js",
+          "bound": "design",
+          "boundReason": "A host name that resolves to a metadata address only at run time cannot be decided from the command; the egress proxy refuses it by resolved address where it is deployed."
         }
       ],
       "stride": "Information Disclosure",
@@ -2207,7 +2213,9 @@
         {
           "id": "T1176.002",
           "coverage": "partial",
-          "reason": "an editor extension side-loaded from a local .vsix or URL (code/cursor/windsurf --install-extension), or written into the extensions directory; marketplace installs by id pass"
+          "reason": "extensions side-loaded from a .vsix or URL, or put into VS Code-family, JetBrains or Eclipse plugin dirs by shell, Write/Edit or MCP; marketplace installs are checked afterwards by the extension scan",
+          "bound": "design",
+          "boundReason": "Installing a marketplace extension by id is ordinary developer work and is not held at install; side-loads and direct writes are, and installed extensions are checked against advisories."
         },
         {
           "id": "T1195.001",
@@ -2258,8 +2266,8 @@
       "id": 59,
       "category": "Agents & Permissions",
       "threat": "Lethal trifecta exposure",
-      "example": "Within one agent session all three exfiltration legs appeared: access to private data, exposure to untrusted content, and the ability to communicate externally. Any one is safe; together they are the classic prompt-injection data-exfiltration setup.",
-      "response": "This session combines private-data access + untrusted input + an external egress path — the lethal trifecta. Review the agent's tool profile: remove one leg (least-privilege MCP allow-list, or block the external call) to break the exfiltration chain.",
+      "example": "Within one agent session all three exfiltration legs appeared: access to private data, exposure to untrusted content, and the ability to communicate externally. Any one is safe; together they are the classic prompt-injection data-exfiltration setup. Or the agent pages through one MCP server's records or resources far past normal use, or asks the server for a bulk export, in one session.",
+      "response": "This session combines private-data access + untrusted input + an external egress path — the lethal trifecta. Review the agent's tool profile: remove one leg (least-privilege MCP allow-list, or block the external call) to break the exfiltration chain. Reads through one MCP server are counted per session against read and byte budgets, and a dump-shaped query is flagged (mcpHarvest: report by default, ask or block by policy).",
       "saferAlternative": "Remove one leg: disable the egress tool, or restrict untrusted-input tools with the MCP allow-list.",
       "severity": 5,
       "likelihood": 3,
@@ -2270,7 +2278,13 @@
         "OWASP_Agentic"
       ],
       "owasp": "LLM06",
-      "atlas": "AML.T0057",
+      "atlas": [
+        "AML.T0057",
+        "AML.T0085"
+      ],
+      "atlasPartial": {
+        "AML.T0085": "reads through MCP tools, per server and session"
+      },
       "owaspAgentic": [
         "ASI02"
       ],
@@ -2292,12 +2306,12 @@
         {
           "id": "T1030",
           "coverage": "partial",
-          "reason": "five or more transfers of up to 8 KB to one destination summing 16 KB within 30 minutes"
+          "reason": "a file split into chunks (split, zip -s, 7z/rar -v, tar -M, dd) then sent in the same session or call, and 5+ small transfers to one host in 30 min; PowerShell chunking and script slices not read"
         },
         {
           "id": "T1074.001",
           "coverage": "partial",
-          "reason": "a credential read staged (copied, written or encoded) and then sent out in the same session"
+          "reason": "a credential read staged, or a sensitive location (keys, keychains, browser profiles, history, mail, home) copied or archived, then sent in the same session or call; script or variable paths unseen"
         },
         {
           "id": "T1560.001",
@@ -3590,7 +3604,7 @@
         "MCP10"
       ],
       "owaspMcpPartial": {
-        "MCP10": "what an agent sends in one MCP call (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed"
+        "MCP10": "what an agent sends in one MCP call or one sampling / elicitation answer (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed"
       },
       "attack": [],
       "attackNote": "Over-sharing by the agent itself is a data-handling failure, not an adversary technique; exfiltration by an adversary is #65 / #1.",
@@ -3641,6 +3655,152 @@
       ],
       "capec": [],
       "capecNote": "No adversary acts: a fault spreading through an agent's own calls is not an attack pattern, and CAPEC-130 Excessive Allocation needs an attacker crafting requests."
+    },
+    {
+      "id": 94,
+      "category": "Identity & Access",
+      "threat": "Agent request without a valid session identity",
+      "example": "A request reaches the MCP gateway or the model proxy under an agent session the administrator revoked, or, where identity is required, with no agent identity, an expired one, one that does not verify, or one minted on another device.",
+      "response": "Refuse a revoked session at the MCP gateway and the model proxy; under agentIdentity require, also refuse a request without a verified identity from this device's key. Record the session on every alert the request raises.",
+      "saferAlternative": "Start agents with moorai-identity run, set agentIdentity to require, and revoke a session from the console when it should stop.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0132",
+      "atlasPartial": {
+        "AML.T0132": "MoorAI's MCP gateway, and its model proxy in enforce mode, under agentIdentity require; any process of the same OS user can mint a token"
+      },
+      "owaspAgentic": [
+        "ASI03"
+      ],
+      "owaspAgenticPartial": {
+        "ASI03": "agent session identity at the MCP gateway and the model proxy: revoked sessions refused, and under require any identity that is absent, expired, invalid or foreign; any process of the same OS user can mint a token, no per-tool authorization"
+      },
+      "owaspMcp": [
+        "MCP07"
+      ],
+      "owaspMcpPartial": {
+        "MCP07": "the MCP gateway verifies a device-signed, short-lived agent session token per request, refuses a revoked session, and under require one that is absent, expired, invalid or foreign; any process of the same OS user can mint a token, no mutual TLS, no per-tool or per-role authorization, the MCP server's own authorization is not seen"
+      },
+      "attack": [],
+      "attackNote": "A request without a valid MoorAI agent session identity is a missing control on MoorAI's own token, not an adversary technique in ATT&CK v20.",
+      "stride": "Spoofing",
+      "cwe": [
+        {
+          "id": 306,
+          "title": "Missing Authentication for Critical Function"
+        }
+      ],
+      "capec": [],
+      "capecNote": "No attack pattern is detected: the rule refuses a request whose agent identity is missing, stale or revoked, and CAPEC's authentication-bypass patterns describe exploiting a flaw, which this does not see."
+    },
+    {
+      "id": 95,
+      "category": "Data Exposure",
+      "threat": "Data posted to a paste site or gist",
+      "example": "The agent sends data to a public text-storage site with a shell command: a POST to pastebin.com, paste.ee, hastebin.com, dpaste, rentry, ix.io, sprunge.us or paste.rs, output piped to `nc termbin.com 9999`, `gh gist create`, `gh api gists -f …` or a POST to api.github.com/gists, or a GitLab snippet (`glab snippet create`, a POST to /api/v4/snippets). Reading a paste or listing gists is not a send.",
+      "response": "Review what is being posted. A paste or a gist is readable by anyone holding its link (a public gist by anyone), which makes it a drop box for whatever an agent was steered to collect; sharing a log this way is also ordinary work, so this is report-only by default.",
+      "saferAlternative": "Share the text through your organisation's own repository, issue tracker or file share instead of a public paste site.",
+      "severity": 3,
+      "likelihood": 2,
+      "riskScore": 6,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0086",
+      "atlasPartial": {
+        "AML.T0086": "listed paste sites, gists and GitLab snippets, from shell commands only"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1567.003",
+          "coverage": "partial",
+          "reason": "Bash and PowerShell posts to listed paste sites, gist creation (gh, gh api, the REST API) and GitLab snippets; MCP tools, WebFetch and unlisted paste hosts are not covered"
+        }
+      ],
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or text-storage attack pattern."
+    },
+    {
+      "id": 96,
+      "category": "Data Exposure",
+      "threat": "Code pushed to a repository the project does not use",
+      "example": "The agent pushes to a repository that is none of the project's own remotes: `git push https://github.com/<someone-else>/<repo>.git`, a remote it added or re-pointed in this session (`git remote add backup <url>` then `git push backup --all`, `git remote set-url origin <url>` then `git push`), or `gh repo create <name> --push`. A push to a remote the project already had, to a local path, or to a destination on the signed policy's codeRepoAllow is silent.",
+      "response": "Check where the code is going. A repository the agent picked or created is a place anyone with access to it reads the project back from; publishing to a new repository on request is also ordinary work, so this is report-only by default. Add your organisation's hosts or owners to codeRepoAllow to keep pushes there silent.",
+      "saferAlternative": "Push to the project's configured remote, or create the repository yourself under your organisation and add it as a remote.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0086",
+      "atlasPartial": {
+        "AML.T0086": "git pushes and gh repo create --push to a repository that is not one of the project's remotes"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1567.001",
+          "coverage": "partial",
+          "reason": "git push to a URL or a session-added or re-pointed remote that is none of the project's remotes, and gh repo create --push; git hosting APIs, MCP tools and url.insteadOf rewrites are not covered"
+        }
+      ],
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or code-repository attack pattern."
+    },
+    {
+      "id": 97,
+      "category": "Add-ons & Tools",
+      "threat": "MCP server overuses the client's model through sampling",
+      "example": "An MCP server sends a stream of sampling requests, each asking for the largest maxTokens, so the client's model runs on the server's behalf far past what the task needs.",
+      "response": "Cap the sampling requests and requested tokens a server can send in one session; report or refuse past the cap.",
+      "saferAlternative": "Set samplingBudget in the signed policy (maxRequests, maxTokens, windowMin, action \"block\"), or use MCP servers that do not need sampling.",
+      "severity": 2,
+      "likelihood": 2,
+      "riskScore": 4,
+      "riskLevel": "Low",
+      "sources": [
+        "Agent safety"
+      ],
+      "owasp": "LLM10",
+      "atlas": "AML.T0034",
+      "atlasPartial": {
+        "AML.T0034": "MCP sampling requests and their stated maxTokens per session, at the MCP guard and gateway"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A protocol request for the client's model, not a host command, so no ATT&CK technique is credited.",
+      "stride": "Denial of Service",
+      "cwe": [
+        {
+          "id": 770,
+          "title": "Allocation of Resources Without Limits or Throttling"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no pattern for a protocol sampling request."
     }
   ]
 }

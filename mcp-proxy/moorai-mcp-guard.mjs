@@ -76,6 +76,7 @@ import { buildEngine, mcpGateway, decideText, threatActionFor, literacyTouchpoin
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { serverRequestsOf, gateServerRequest } from "./sampling-scan.mjs";
+import { clientAnswersOf, gateClientAnswer, gateSamplingBudget, createSamplingBudget } from "./sampling-response.mjs";
 import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "./tool-drift.mjs";
@@ -579,9 +580,25 @@ async function handleLine(rawLine) {
 
   if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
   if (msg && msg.method === "tools/list") rememberList(msg);
+  const answers = clientAnswersOf(msg);
+  if (answers && await gateAnswer(msg, answers)) return;
   if (msg && msg.method === "resources/read" && msg.params && typeof msg.params === "object") return gateResourceRead(rawLine, msg);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
   return TRACE.run(callTrace(msg), () => gateCall(rawLine, msg));
+}
+
+// The client's answer to a sampling / elicitation request (./sampling-response.mjs): → true when it was refused
+// and the refusal written in its place.
+async function gateAnswer(msg, found) {
+  await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+  const ref = gateClientAnswer(msg, found, {
+    engine: ENGINE, policy: POLICY, coach: COACH, server: SERVER, toolPrefix: "desktop", identity: IDENTITY, post, failClosed, coachNote, seenOnce,
+    record: (a) => recordAction(applyCaptureTier(a, {}, (POLICY && POLICY.captureTier) || "content-free"))
+  });
+  if (!ref) return false;
+  if (ref.toServer) child.stdin.write(JSON.stringify(ref.toServer) + "\n");
+  process.stdout.write(JSON.stringify(ref.toClient) + "\n");
+  return true;
 }
 
 // resources/read (client → server): counted toward the server's harvest budget, and a file:// URI judged against
@@ -1062,6 +1079,9 @@ function countRead(m, bytes) {
   } catch { /* a count, never enforcement */ }
 }
 
+// Sampling requests this process's server has sent, toward policy.samplingBudget (./sampling-response.mjs).
+const SAMPLING_BUDGET = createSamplingBudget();
+
 // ONE message from the child. Exactly one write happens, and the default is always the original bytes.
 async function gateResult(lineBuf) {
   let done = false;
@@ -1088,10 +1108,11 @@ async function gateResult(lineBuf) {
     if (sreq) {
       if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
       const call = sreq.shape === "request" ? null : CALL_TOOL.get(String(msg.id)) || null;
-      const ref = TRACE.run(call && call.trace, () => gateServerRequest(msg, sreq, {
+      const deps = {
         engine: ENGINE, policy: POLICY, coach: COACH, server: SERVER, toolPrefix: "desktop", label: call && call.tool, isToolCall: !!call, identity: IDENTITY, post, failClosed, coachNote,
-        record: (a) => recordAction(applyCaptureTier(a, {}, (POLICY && POLICY.captureTier) || "content-free"))
-      }));
+        record: (a) => recordAction(applyCaptureTier(a, {}, (POLICY && POLICY.captureTier) || "content-free")), budget: SAMPLING_BUDGET, sessionKey: ""
+      };
+      const ref = TRACE.run(call && call.trace, () => gateSamplingBudget(msg, sreq, deps) || gateServerRequest(msg, sreq, deps));
       if (ref) {
         done = true;
         if (ref.toServer) child.stdin.write(JSON.stringify(ref.toServer) + "\n");
