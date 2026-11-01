@@ -61,15 +61,20 @@ function rootOf(s) {
   return null;
 }
 
-function fold(segs, rest) {
+function fold(segs, rest, dotsLiteral) {
   for (const raw of rest.split("\\")) {
+    // A bare dot run (raw is only dots: no stream, no trailing space) is unambiguous on every host: `..` the
+    // parent, `.` / `...` current. Decide this from raw, not the stream-stripped form, so `..::$DATA` is NOT
+    // mistaken for a bare `..` and still reaches the decorated branch below (both readings).
+    if (/^\.+$/.test(raw)) { if (raw === "..") segs.pop(); continue; }
     const stream = raw.replace(/:.*$/s, "");
-    // A component of only dots and spaces is navigation after Win32 strips the trailing run, decided by the
-    // leading dot run (the tail may mix dots and spaces): one dot (`.` / `. `) is current, exactly two
-    // (`..` / `.. ` / `.. .` / `..::$DATA`) is the parent, three or more (`...` / `... `) is an empty/current
-    // component. Classify before the trailing-dot/space strip so `..` is never emptied away.
+    // A DECORATED dot run — two leading dots then a trailing space, dot or stream (`.. ` / `.. .` / `..::$DATA`)
+    // — is where Win32's per-segment trailing-run strip can turn it into the parent, but whether a non-final
+    // segment does so is on the filesystem, not in the string. So winCanon resolves it as the parent by default
+    // and, under dotsLiteral, as a dropped/current segment; the guard tests both readings so neither one slips a
+    // write past (cli/containment-guard.mjs classOfWord). A one-dot or three-plus-dot decorated run is current.
     const dots = /^(\.+)[. ]*$/.exec(stream);
-    if (dots) { if (dots[1].length === 2) segs.pop(); continue; }
+    if (dots) { if (!dotsLiteral && dots[1].length === 2) segs.pop(); continue; }
     const name = stream.replace(/[. ]+$/, "");
     if (name) segs.push(name);
   }
@@ -79,8 +84,10 @@ function fold(segs, rest) {
 const join = (root, segs) => (/:$/.test(root) ? `${root}\\${segs.join("\\")}` : [root, ...segs].join("\\"));
 
 // The canonical absolute form of p, or "" when it cannot be made absolute without the filesystem.
-// literal: no variable or ~ expansion (the string as a file API would take it).
-export function winCanon(p, { env = {}, cwd = "", literal = false } = {}) {
+// literal: no variable or ~ expansion (the string as a file API would take it). dotsLiteral: resolve a decorated
+// `..` run (`.. ` / `.. .` / `..::$DATA`) as a dropped/current segment instead of the parent, so the guard can
+// test both readings (see fold).
+export function winCanon(p, { env = {}, cwd = "", literal = false, dotsLiteral = false } = {}) {
   let s = String(p ?? "").trim().replace(/["']/g, "");
   if (!s || s.length > 4096) return "";
   if (!literal) { s = expandVars(s, env); if (!s) return ""; }
@@ -102,7 +109,7 @@ export function winCanon(p, { env = {}, cwd = "", literal = false } = {}) {
     } else if (s.startsWith("\\")) r = { root: base.root, rest: s };
     else r = { root: base.root, rest: `${base.rest}\\${s}` };
   }
-  const out = join(r.root, fold([], r.rest));
+  const out = join(r.root, fold([], r.rest, dotsLiteral));
   return out.includes(UNKNOWN) ? "" : out;
 }
 

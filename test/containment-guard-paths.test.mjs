@@ -79,6 +79,20 @@ test("a .. component with a trailing space or an NTFS stream still climbs: Win32
   }
 });
 
+test("a decorated .. run is ambiguous on the host, so the guard flags either reading: the parent (climb) and the dropped/current segment", () => {
+  // `dotsLiteral` resolves `.. ` as a dropped segment instead of the parent; the guard tries both so neither
+  // Win32 reading of a non-final decorated `..` slips a write past.
+  assert.equal(winCanon("C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh", { env: ENV, cwd: CWD }), "C:\\Users\\dev\\.claude\\s.sh", "the climb reading leaves the protected dir");
+  assert.equal(winCanon("C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh", { env: ENV, cwd: CWD, dotsLiteral: true }), "C:\\Users\\dev\\.claude\\shell-snapshots\\s.sh", "the dropped reading stays inside it");
+  // Only the dropped reading is under a protected path, and the guard still flags it.
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh" }), "shell-snapshots", "drop reading into shell-snapshots is flagged");
+  // A stream-decorated `..` must get the same two readings as the space form, not be mistaken for a bare `..`.
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\..::$DATA\\s.sh" }), "shell-snapshots", "drop reading of a stream-decorated .. is flagged");
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\.. \\MoorAI Host\\x.json" }), "moorai-host", "drop reading back into MoorAI Host is flagged");
+  // The climb reading alone is still caught too (decoy segment plus `.. `).
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\foo\\.. \\.bashrc" }), "shell-rc", "climb reading into a protected file is flagged");
+});
+
 test("environment forms expand from env: %HOMEDRIVE%%HOMEPATH%, $env:NAME and ${env:NAME} in any case, ~; unknown → \"\"", () => {
   same("C:\\Users\\dev\\.bashrc", ["%HOMEDRIVE%%HOMEPATH%\\.bashrc", "%userprofile%\\.bashrc", "$env:USERPROFILE\\.bashrc", "$ENV:userprofile\\.bashrc", "${env:USERPROFILE}\\.bashrc", "${Env:UserProfile}/.bashrc", "~/.bashrc", "~\\.bashrc", "$HOME/.bashrc", "${HOME}/.bashrc"]);
   same("C:\\Users\\dev\\AppData\\Local\\MoorAI Host", ["%LOCALAPPDATA%\\MoorAI Host", "$env:LocalAppData\\MoorAI Host", "${env:LOCALAPPDATA}\\MoorAI Host"]);

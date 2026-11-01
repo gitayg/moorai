@@ -1999,14 +1999,19 @@ wildcard root `*:\`, which matches every drive; any other device path is unknown
 `C:x` is relative to cwd only when cwd is on `C:`; trailing dots and spaces and an NTFS stream suffix (`:s`,
 `::$DATA`, `:$I30:$INDEX_ALLOCATION`) are dropped from every segment (Win32 trims only the last segment and skips
 normalisation under `\\?\`; trimming everywhere can only make more spellings meet); `.` and `..` fold and never climb
-past the root, and a segment of only dots and spaces is navigation after that trim (v1.46.2), decided by the leading
+past the root, and a segment of only dots and spaces is navigation after that trim (v1.46.3), decided by the leading
 dot run (the tail may mix dots and spaces): `. ` is current and `.. `, `..  `, `.. .` and `..::$DATA` fold the same as
 `..` (a decoy segment plus `.. ` no longer walks into the parent); a run of three or more dots (`...`, `... `) is an
 empty/current component; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
 leading `~` expand from env, `$HOME` and `~` meaning `USERPROFILE`; a variable that is unset or empty makes the path
 unknown (`""`, not denied) unless folding drops it (inside a stream suffix, or a segment a `..` removes). A
 `Write`/`Edit` path and every shell word is also read literally, as a file API would take it, so
-`C:\Users\me\%USERPROFILE%\..\.bashrc` is seen. The protected paths themselves are canonicalized from env.
+`C:\Users\me\%USERPROFILE%\..\.bashrc` is seen, and a decorated `..` run (`.. ` / `.. .`) is read both as the
+parent and as a dropped/current segment and flagged if either reading lands under a protected path (v1.46.3), since
+whether Win32 reduces such a non-final segment to `..` is on the filesystem. Win32 strips a component's trailing run
+uniformly, so both readings apply to every decorated `..` in a path at once (all parent, or all dropped) — the two
+the guard tests; a single path that resolved different decorated `..` runs differently is not a Win32 outcome and is
+not modelled. The protected paths themselves are canonicalized from env.
 Shell words add each quoted string whole and a PowerShell `-Path:value`'s value. **8.3 short names:** a segment of
 8.3 shape whose base ends in `~digits` (`MOORAI~1`, `BASHRC~1`, `BASH~1.BAS`) matches any segment at the same
 position, on either side, since which long name it stands for is on disk. False-positive cost: a write to any
