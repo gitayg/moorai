@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-31T14:03:01.841Z",
+  "generatedAt": "2026-11-01T02:26:13.443Z",
   "engine": {
-    "detectors": 128,
-    "threats": 89,
+    "detectors": 130,
+    "threats": 93,
     "corpusCases": 102
   },
   "corpus": {
@@ -20,8 +20,8 @@
         "detectors": 25
       },
       "LLM02": {
-        "threats": 24,
-        "detectors": 45
+        "threats": 26,
+        "detectors": 47
       },
       "LLM03": {
         "threats": 8,
@@ -36,7 +36,7 @@
         "detectors": 16
       },
       "LLM06": {
-        "threats": 19,
+        "threats": 20,
         "detectors": 10
       },
       "LLM07": {
@@ -52,7 +52,7 @@
         "detectors": 4
       },
       "LLM10": {
-        "threats": 3,
+        "threats": 4,
         "detectors": 1
       }
     }
@@ -80,10 +80,10 @@
         "status": "partial"
       },
       "ASI03": {
-        "threats": 4,
-        "partialThreats": 4,
-        "detectors": 6,
-        "mechanisms": 1,
+        "threats": 5,
+        "partialThreats": 5,
+        "detectors": 7,
+        "mechanisms": 3,
         "status": "partial"
       },
       "ASI04": {
@@ -141,14 +141,14 @@
     "edition": "2025, beta",
     "source": "https://github.com/OWASP/www-project-mcp-top-10",
     "covered": 1,
-    "partial": 8,
-    "uncovered": 1,
+    "partial": 9,
+    "uncovered": 0,
     "total": 10,
     "byItem": {
       "MCP01": {
         "threats": 3,
         "partialThreats": 3,
-        "detectors": 28,
+        "detectors": 29,
         "mechanisms": 0,
         "status": "partial"
       },
@@ -188,11 +188,11 @@
         "status": "covered"
       },
       "MCP07": {
-        "threats": 0,
-        "partialThreats": 0,
+        "threats": 1,
+        "partialThreats": 1,
         "detectors": 0,
-        "mechanisms": 0,
-        "status": "uncovered"
+        "mechanisms": 1,
+        "status": "partial"
       },
       "MCP08": {
         "threats": 1,
@@ -212,13 +212,13 @@
         "threats": 2,
         "partialThreats": 2,
         "detectors": 0,
-        "mechanisms": 2,
+        "mechanisms": 3,
         "status": "partial"
       }
     }
   },
   "mechanismEvidence": {
-    "declared": 15,
+    "declared": 18,
     "proven": [
       "mcp-server-allow",
       "subagent-delegation",
@@ -234,7 +234,10 @@
       "mcp-oversharing",
       "cascade-limits",
       "mcp-package-policy",
-      "package-known-bad"
+      "package-known-bad",
+      "gateway-agent-identity",
+      "model-proxy-agent-identity",
+      "sampling-response"
     ],
     "unproven": []
   },
@@ -242,18 +245,18 @@
     "edition": "20.0",
     "source": "https://attack.mitre.org/resources/updates/",
     "total": 71,
-    "covered": 2,
-    "partial": 56,
-    "uncovered": 13,
-    "partialDesign": 9,
-    "partialGap": 47,
+    "covered": 8,
+    "partial": 52,
+    "uncovered": 11,
+    "partialDesign": 13,
+    "partialGap": 39,
     "agentLane": {
       "total": 58,
-      "covered": 2,
-      "partial": 54,
-      "uncovered": 2,
-      "partialDesign": 8,
-      "partialGap": 46
+      "covered": 8,
+      "partial": 50,
+      "uncovered": 0,
+      "partialDesign": 12,
+      "partialGap": 38
     },
     "byItem": {
       "T1698": {
@@ -378,7 +381,7 @@
         "threats": 1,
         "detectors": 2,
         "status": "partial",
-        "partialBound": "gap"
+        "partialBound": "design"
       },
       "T1677": {
         "lane": "agent",
@@ -406,35 +409,33 @@
         "threats": 1,
         "detectors": 2,
         "status": "partial",
-        "partialBound": "gap"
+        "partialBound": "design"
       },
       "T1552.001": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1552.003": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
+        "detectors": 4,
         "status": "partial",
-        "partialBound": "gap"
+        "partialBound": "design"
       },
       "T1552.004": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1552.005": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
+        "detectors": 4,
         "status": "partial",
-        "partialBound": "gap"
+        "partialBound": "design"
       },
       "T1552.008": {
         "lane": "agent",
@@ -446,30 +447,26 @@
       "T1555.001": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1555.003": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1003.008": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1528": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 3,
-        "status": "partial",
-        "partialBound": "gap"
+        "detectors": 4,
+        "status": "covered"
       },
       "T1074.001": {
         "lane": "agent",
@@ -508,9 +505,10 @@
       },
       "T1567.001": {
         "lane": "agent",
-        "threats": 0,
+        "threats": 1,
         "detectors": 0,
-        "status": "uncovered"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1567.002": {
         "lane": "agent",
@@ -521,9 +519,10 @@
       },
       "T1567.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1567.004": {
         "lane": "agent",

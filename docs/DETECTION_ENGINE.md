@@ -548,6 +548,15 @@ into an extensions directory (`unzip`/`cp`/`Expand-Archive` into `~/.vscode/exte
 silent. #57 is justify. `test/ide-extension-install.test.mjs` holds 9 positives, 10 hard negatives, a per-pattern
 linear-time check and the hook end to end.
 
+The same side-load by `ln`, `rsync`, `install`, `git clone`, `curl`/`wget` or `7z` also fires, into the forks' and
+remote servers' extension directories (`.vscode-oss`, `.vscode-insiders`, `.cursor-server`, `.windsurf-server`), a
+JetBrains `plugins` directory or an Eclipse `dropins` folder, and so does a JetBrains `installPlugins` that names a
+custom plugin repository URL (`idea installPlugins <id> https://…`; plugin ids alone stay silent). A Write, Edit,
+MultiEdit or MCP filesystem write of a file inside one of those directories asks on #57 as
+`ide-extension-write` (`cli/hook-core.mjs` `decidePersistenceWrite`, see "Persistence footholds inside #46"). A
+marketplace install by id is not judged at install time; the installed-extension scan (`moorai-ide-extensions`)
+reports a known-malicious id or version, a typosquat and a publisher impersonation after the fact.
+
 ### IDE auto-run surfaces on the skill surface (#60)
 
 ATT&CK v20 rewrote T1195.001 to name IDE task files alongside agent skill files. `data/skill-surface.js` now
@@ -628,6 +637,54 @@ ordinary workflow — checkout, `npm ci && npm test`, a secret used as a publish
 — stays silent. #32 is report-only (notify), so the write proceeds and a content-free alert is posted.
 `test/ci-pipeline-poisoning.test.mjs` holds the three dangerous shapes, non-CI and benign negatives, a linear-time
 check and the hook end to end (alert posted for the poisoned file, none for the benign).
+
+The pipeline definitions it reads also include composite actions (`action.yml`), Gitea and Forgejo workflows,
+GitLab `include` files under `.gitlab/ci/`, Buildkite, Travis, Drone, Woodpecker, Tekton, Cloud Build,
+CodeBuild (`buildspec.yml`), Bitrise and Codemagic files. The step shapes also include a fetch run another way
+(`bash <(curl …)`, `sh -c "$(curl …)"`, `curl … | python`, PowerShell `iex (iwr …)` / `irm … | iex`), the whole
+secrets context serialized (`toJSON(secrets)`), one secret re-encoded so log masking misses it (`${{ secrets.X }}
+| base64`, `xxd`, `rev`, a spacing `sed`), `env | base64` or `printenv | curl`, a GitLab job, registry or deploy
+token sent to a literal URL off a GitLab host (the token's own API use, to `$CI_API_V4_URL` or the instance,
+stays silent), and a Jenkins `withCredentials` / `credentials()` binding used with a network client. The check
+runs on every surface that writes the file: the Write family (the detector), a shell command that writes it
+(redirect, `tee`, heredoc, `Add-Content` / `Set-Content` / `Out-File`: `decideShellCiWrite`, reading the written
+text as #22's shell memory writes do, `data/poisoning-tells.js` `shellWritesTo`) and an MCP filesystem write
+(`decidePersistenceWrite` with `ci`). Not judged: indirect poisoning (a Makefile, script, test or linter the
+pipeline runs), a `cp`/`mv` of a prepared file onto the definition, and writes from an interpreter
+(`python -c "open(…)"`). `test/persistence-write-surfaces.test.mjs` holds the new shapes, GitLab and plain-CI
+negatives and the hook end to end over a heredoc, an echo append, an MCP write and a Write.
+
+### Persistence footholds inside #46
+
+`agent-persistence` in `data/persistence.js` (threat #46, justify) credits ATT&CK T1053.003 Cron, T1543.001
+Launch Agent and T1546.004 Unix Shell Configuration Modification. In a shell command (Bash, PowerShell, Monitor,
+and the Agent SDK's shell branch) it fires on: a crontab install or edit; a redirect, `tee`, `cp`, `mv`,
+`install`, `ln`, `rsync`, `curl`/`wget` into `/etc/cron*`, `/etc/crontab`, `/etc/anacrontab`, `/var/spool/cron`
+or the macOS spool (`/usr/lib/cron/tabs`, `/var/at/tabs`); a plist written, copied, linked, downloaded or edited
+(`defaults write`, `PlistBuddy` Set/Add/Merge/Delete, `plutil -replace|-insert|-remove|-convert`, `sed -i`) in a
+`LaunchAgents` or `LaunchDaemons` folder, `launchctl load|bootstrap|enable` of one, and `launchctl submit`; a
+`systemctl --user enable`; `schtasks /create`, `Register-ScheduledTask` and a Run-key write. A shell startup file
+(the bash and zsh login, interactive and logout files, `/etc/profile`, `/etc/profile.d/*`, `/etc/zsh*`,
+`/etc/bashrc`, fish `config.fish` and `conf.d`) fires when it is appended, overwritten, `tee`d, edited in place
+or downloaded AND the text fetches or executes, or (`rcPayloadHit`) shadows `sudo`, `su`, `ssh`, `scp`, `git`,
+`gpg`, `passwd`, `security` or `kinit` with an alias or function that reads a password, tees, sends or writes to
+a temp path; puts `/tmp`, `/var/tmp` or `/dev/shm` first on `PATH`; sets `LD_PRELOAD` or
+`DYLD_INSERT_LIBRARIES`; or runs a program from a temp directory or under `nohup … &`. An ordinary alias, PATH
+or EDITOR line, `alias sudo='sudo '`, and the tool-init lines installers ask for (`eval "$(pyenv init -)"`,
+`eval "$(brew shellenv)"`, `source <(kubectl completion zsh)`, conda's `eval "$__conda_setup"`) stay silent when
+they are the text added; the older append rule still counts any `eval` in an appended line, so no earlier verdict
+is lowered.
+
+The file-writing tools reach the same classes through `decidePersistenceWrite` (`cli/hook-core.mjs`, used by
+the hook's Write branch, its MCP branch for every filesystem write tool `cli/oversight-mcp.mjs` `mcpWriteCalls`
+recognises, and the Agent SDK's Write branch): `persistencePathKind` classifies the target. A cron table or a
+launchd plist asks whatever is written (`agent-persistence-write`, #46); an editor extension or plugin directory
+asks on #57; a startup file asks only when the text the call adds is a payload: a Write is judged on the lines
+not already in the file (read up to 1 MiB), an Edit or MultiEdit on `new_string` lines not in `old_string`, an
+append or a move on the whole text. Findings carry no content. Not judged: a write through an interpreter or a
+path built at run time, a systemd unit file written without `systemctl --user enable`, and `cp` of a prepared file
+onto a startup file. `test/agent-persistence.test.mjs` and `test/persistence-write-surfaces.test.mjs` hold the
+positives, the benign rc lines, a linear-time check per pattern, and the hook and Agent SDK end to end.
 
 ### Command obfuscation: flag the shape, decode the payload (#50 + the Bash branch)
 
@@ -2935,7 +2992,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 89 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 93 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
@@ -3227,9 +3284,14 @@ the standard a credit has to pass.
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed collection hosts only) | `oast-exfil` | #78 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed hosts, contact without a payload) | `oast-contact` | #79 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (raw HTTP uploads to object storage only) | `object-storage-upload` | #86 | prompt, output |
+| AML.T0086 Exfiltration via AI Agent Tool Invocation (listed paste sites, gists and GitLab snippets, from shell commands only) | `text-storage-upload` | #95 | prompt (Bash, PowerShell) |
+| AML.T0086 Exfiltration via AI Agent Tool Invocation (git pushes and `gh repo create --push` to a repository that is not one of the project's remotes) | `repoPushVerdict` (`cli/repo-push.mjs`, session record `cli/repo-push-state.mjs`) | #96 | prompt (Bash, PowerShell) |
 | AML.T0103 Deploy AI Agent (headless agent CLI runs, agent CLI installs and scheduled agent runs issued as shell commands) | `agent-deploy`; `agent-deploy-schedule-file` | #88 | prompt; output (Write of a launchd, systemd or cron file) |
 | AML.T0109 AI Supply Chain Rug Pull (MCP tool descriptions and schemas changed after approval, at the MCP guard and gateway only) | tool drift (`mcp-proxy/tool-drift.mjs`, `tool-baseline.mjs`) | #25 | MCP `tools/list` and calls |
 | AML.T0132 Misconfigured or Publicly Exposed AI Services (local model servers on this device only) | `LOCAL_MODEL_EXPOSED` (`cli/local-model-exposure.mjs`) | #89 | posture heartbeat |
+| AML.T0132 Misconfigured or Publicly Exposed AI Services (MoorAI's MCP gateway, and its model proxy in `--mode enforce`, under `agentIdentity` require) | `judgeIdentity` (`cli/agent-session-identity.mjs`) at `mcp-gateway/identity.mjs` and `model-proxy/identity.mjs` | #94 | each gateway and model-proxy request |
+| AML.T0085 Data from AI Services (reads through MCP tools, per server and session) | `assessHarvest`, `dumpShaped` (`cli/mcp-harvest.mjs`, `mcpHarvest`) | #59 | MCP `tools/call` and `resources/read` in the hook and the stdio guard |
+| AML.T0034 Cost Harvesting (MCP sampling requests and their stated `maxTokens` per session, at the MCP guard and gateway) | `gateSamplingBudget` (`mcp-proxy/sampling-response.mjs`, `samplingBudget`) | #97 | MCP `sampling/createMessage` |
 
 `egress-rendered-extended` reads the rendering channels `egress-rendered-image` does not — data in a URL
 path segment, hex- or base64-encoded text, a secret-named parameter, reference-style markdown images,
@@ -3394,9 +3456,14 @@ appends a bounded credit's limit in parentheses.
 | #67 Transit interception | T0024, **T0081** | the hook reads the agent's own environment and every shell command it runs for a proxy or CA override (`decideTransit`), by proxy host and variable name only |
 | #68 Crafted AI assistant link | T0131, **T0080** | `craftedAssistantLink` requires the decoded payload to ask for *persistence* — a durable cross-session memory write — as a condition separate from the link shape |
 | #70 Content aimed only at the AI client | T0134, **T0130** | `steeringDirectiveHit` is a separately required half: a clause aimed at what the agent will *say*, which involves no contradiction and no cloaking |
+| #59 Lethal trifecta exposure | T0057, **T0085** | `cli/mcp-harvest.mjs` counts the reads an agent makes through *one* MCP server per session against read and byte budgets and flags dump-shaped queries (`mcpHarvest`: report by default, ask or block by policy) — collection volume, which the trifecta's capability co-occurrence does not measure |
 
-The rule base credits **36 distinct techniques (34 in the 76-technique Agentic AI set;** AML.T0011.000
-is a sub-technique and is not counted in the top-level set**)**. v1.41.0 adds AML.T0103 (#88 agent launched or
+The rule base credits **37 distinct techniques (35 in the 76-technique Agentic AI set;** AML.T0011.000
+is a sub-technique and is not counted in the top-level set**)**. v1.47.0 adds AML.T0085 (#59, MCP read
+budgets per server and session), bounded; #94 (agent session identity) credits AML.T0132, bounded, which
+#89 already held; #95 (paste sites and gists) and #96 (pushes to a repository the project does not use) credit
+AML.T0086, which #78 and #86 already held, and #97 (MCP sampling budget) credits AML.T0034, which #38, #53 and
+#93 already held, so the distinct count does not move. v1.41.0 adds AML.T0103 (#88 agent launched or
 installed by an agent), AML.T0109 (#25, MCP tool drift after approval at the guard and gateway) and AML.T0132
 (#89 local model server reachable without MoorAI), each bounded. The re-map took coverage from 16 (15)
 to 28 (27); #73–#77 add AML.T0092, AML.T0061, AML.T0067, AML.T0011.000 and AML.T0035. The count is asserted in `test/atlas-mapping.test.mjs`, which also validates every
@@ -3423,6 +3490,14 @@ Rejections are pinned in the same test, so re-adding one has to argue with the l
 | #4, #6, #14, #23 | T0110 / T0085 / T0101 | coaching rules with no detection, inventory, or enforcement mechanism behind them |
 | #62 | T0062 Discover LLM Hallucinations | the adversary's own reconnaissance step; nothing observes it |
 | #55 | T0083 Credentials from AI Agent Configuration | `.npmrc`, `.kube/config` and `.docker/config.json` are tool configuration, not *AI agent* configuration |
+| #57 | T0060 Publish Hallucinated Entities | the MCP package policy's typosquat and unpublished-name codes sit inside T0010 (ATLAS's AI Software text names hallucinated package names), already credited on #57; #62 holds T0060 |
+| #57 | T0109 AI Supply Chain Rug Pull | pinning an MCP server package stops a malicious update, one path to the T0010 compromise #57 already credits |
+| #57 | T0110 AI Agent Tool Poisoning | the known-compromised releases carry conventional malware in a package, which ATLAS files as a supply-chain compromise, not tool poisoning |
+| #91 | T0110 / T0099 | the `includeContext` check is the one mechanism already credited T0057; a sampling request is written by the server itself, not data a benign tool retrieves |
+| #92 | T0086 Exfiltration via AI Agent Tool Invocation | the over-sharing signal is the one mechanism already credited T0057 on #92; a second technique on the same signal is a restatement |
+| #93 | T0124 / T0117 / T0118 | cascade limits count spawns, depth, failing calls and denials; they do not observe how work is allocated across agents, an agent revising its path, or what agents exchange |
+| #94 | T0012 / T0091.000 | the agent identity token is MoorAI's own: a copied one gives nothing a process of the same user cannot mint |
+| — | T0091.000 Application Access Token (MCP gateway OAuth checks), T0108 AI Agent (operator stop) | both post `threatId: 0` under no rule, so there is no rule to credit; the OAuth audience and cross-server reuse checks are a candidate for a bounded T0091.000 credit once they post under one |
 
 ---
 
@@ -3453,7 +3528,7 @@ alignment earns ASI01 and MCP06).
 | Framework | Covered (a full credit) | Partial (bounded credits only) | Uncovered |
 |---|---|---|---|
 | Agentic | ASI01 | ASI02, ASI03, ASI04, ASI05, ASI06, ASI07, ASI08, ASI09, ASI10 | none |
-| MCP | MCP06 | MCP01, MCP02, MCP03, MCP04, MCP05, MCP08, MCP09, MCP10 | MCP07 |
+| MCP | MCP06 | MCP01, MCP02, MCP03, MCP04, MCP05, MCP07, MCP08, MCP09, MCP10 | none |
 
 That table counts rules. [BENCHMARK.md](BENCHMARK.md) counts a credit only when something on the device
 backs it: a detector in `data/detectors.js`, or an enforcing mechanism declared in
@@ -3461,9 +3536,10 @@ backs it: a detector in `data/detectors.js`, or an enforcing mechanism declared 
 in it, and one or more tests; `scripts/mechanism-evidence.mjs` counts it only while the file holds the symbol
 and each test exists in `test/*.test.mjs` with exactly that title (a skipped or `todo` test does not count).
 A declaration backs only a credit the rule already carries, at the level it carries it, and naming any other
-item is an error. ASI07 (#66, the delegation check), ASI08 (#93, cascade limits), MCP09 (#25, the MCP server
-allow-list) and MCP10 (#91, the sampling context check; #92, the over-sharing signal) have no detector and are
-backed this way; ASI10 is backed by #88's detectors and by #64's entitlement envelope and learned baseline and
+item is an error. ASI07 (#66, the delegation check), ASI08 (#93, cascade limits), MCP07 (#94, agent session
+identity at the MCP gateway), MCP09 (#25, the MCP server allow-list) and MCP10 (#91, the sampling context check;
+#92, the over-sharing signal, on MCP arguments and on the client's answer to a sampling or elicitation request)
+have no detector and are backed this way; ASI10 is backed by #88's detectors and by #64's entitlement envelope and learned baseline and
 #84's oversight check.
 `test/mechanism-evidence.test.mjs` pins the rules; the title check proves a test exists, not what it
 asserts, so each declaration's tests are reviewed when it is added.
@@ -3485,10 +3561,12 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
 * **MCP03 rug pulls.** Tool-drift blocking against approved baselines (`mcp-proxy/tool-drift.mjs`) posts
   under #25, which credits ASI04 and MCP09; MCP03 is credited only for #50 and #60's description and schema
   scans.
-* **MCP07 Authentication & Authorization.** The MCP gateway authenticates the calling agent session
-  (`agentIdentity`) and checks a bearer token's audience, issuer and scope (`mcpOAuth`), but these are
-  controls with no rule in `data/threats.json`, so a per-rule crosswalk does not credit them; the MCP
-  server's own authorization is not seen.
+* **MCP07 Authentication & Authorization** is credited to #94 only, bounded: the MCP gateway verifies the
+  calling agent session's device-signed, short-lived token per request (`agentIdentity`), refuses a revoked
+  session, and under `require` one that is absent, expired, invalid or foreign. Any process of the same OS
+  user can mint a token, there is no mutual TLS and no per-tool or per-role authorization, and the MCP
+  server's own authorization is not seen. The bearer-token checks (`mcpOAuth`: audience, issuer, scope,
+  cross-server reuse) still post `threatId: 0` under no rule and are not part of the credit.
 * **MCP08 Audit.** The hash-chained ledger is a direct control but not a rule; only #73 (an agent rewriting
   its own transcripts) is credited, bounded.
 * **MCP09 Shadow MCP Servers.** The AIBOM inventories configured and listening MCP servers, but raises no
@@ -3497,8 +3575,13 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
   the data-loss detectors on the arguments (values with their line breaks, base64 / `data:` content
   decoded), a labelled file sent encoded, and an over-sharing signal (#92: size, encoded blob, pasted file or
   conversation; `mcpOversharing`, report by default); a server's sampling request asking for the client's
-  context is #91. Sharing between users, sessions or agents is not observed, #1's DLP is not credited for
-  it, and #36 is coaching only.
+  context is #91; the client's answer to a sampling or elicitation request gets the same data-loss check and
+  over-sharing signal (`mcp-proxy/sampling-response.mjs`). Sharing between users, sessions or agents is not
+  observed, #1's DLP is not credited for it, and #36 is coaching only.
+* **ASI02 on #95 and #96.** The paste-site (#95) and code-repository (#96) rules carry no ASI02 credit: OWASP's
+  item text could not be read at v1.47.0 (the document download is gated), and a credit is added only against
+  the item's own text. #78 and #86 hold ASI02 for the same exfiltration shape from an earlier review, so ASI02's
+  status does not change. `test/owasp-frameworks.test.mjs` pins the two as rejected.
 
 ## 17. The ATT&CK v20 mapping
 

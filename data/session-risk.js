@@ -15,7 +15,10 @@
 //   sequences    credential read -> staged (copied, redirected or written to a file, or encoded or
 //                archived) -> outbound; archive -> outbound; and a mass read (`massReads` distinct
 //                files) -> an upload of 4 KB or more to a destination new to the session. Each within
-//                `seqSteps` calls and `windowMin` minutes.
+//                `seqSteps` calls and `windowMin` minutes. Also, from data/exfil-channels.js stagingFacts:
+//                a file split into chunks -> outbound (T1030), and a sensitive location (credential
+//                stores, keys, keychains, browser profiles, history, mail, the home directory) copied or
+//                archived -> outbound (T1074.001); for these two, the same call counts as well.
 //
 // Report-only by default (policy.sessionRisk.mode "report"): alerts, no decision change. "ask" raises
 // the outbound call that completes a signal from allow to ask. The hook coaches an unenrolled device.
@@ -32,6 +35,7 @@
 //                the signed policy or the admin binding. Independent of `mode`.
 import { actionTargets, siteOf } from "./intent-alignment.js";
 import { ORIGIN_LEVELS, ORIGIN_DEFAULT_LEVEL, ORIGIN_GATE_CLASSES, strictestLevel, originReason } from "./origin-taint.js";
+import { stagingFacts } from "./exfil-channels.js";
 
 export const TAINT_THREATS = new Set([2, 3, 40, 50, 60, 70, 72, 74]); // injection, indirect, second-order, hidden text, rules-file poisoning, AI-only cloaking, metadata, self-replication
 const CRED_THREATS = new Set([39, 55]);                               // secret values, credential-file access
@@ -84,6 +88,7 @@ const WRITES = new RegExp(`${B}(?:cp|mv|tee|install|dd|Copy-Item|Set-Content|Out
 const CRED_PATH = /(?:^|[\s"'`=\/\\~])(?:\.env(?![\w.-]*\.(?:example|sample|template)\b)(?:\.[\w-]+)?|\.aws[\/\\](?:credentials|config)|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc|\.netrc|\.git-credentials|\.pgpass|\.docker[\/\\]config\.json|\.kube[\/\\]config|\/etc\/shadow)(?=$|[\s"'`;|&<>)])/i;
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 const GIST = /(?<![\w.\/-])gh\s+gist\s+create\b/;
+const GH_REPO_PUSH = /(?<![\w.\/-])gh\s+repo\s+create\b[^;&|\n]{0,400}?\s--push\b/;
 const PUSH_URL = /(?<![\w.\/-])git\s+push\b[^;&|\n]{0,200}?\s(?:https?|ssh|git):\/\/(?:[^@\s\/]{1,200}@)?([a-z0-9][\w.-]{0,252})/i;
 const URL_RE = /\b(?:https?|wss?):\/\/(?:[^\s\/@'"]{0,200}@)?([^\s\/:'"?#`)]{1,253})(?::\d{1,5})?([^\s'"`]*)/gi;
 const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\]|::1)$/i;
@@ -135,7 +140,7 @@ export function classifyEvent({ event, tool, identity, textLen = 0, findings = [
   // credFile: a credential FILE was accessed (#55, or an environment dump below). secret: a secret value
   // is in what the call reads or writes. cred (the sequence class): a credential file, or a secret being
   // written to a file. writes: the call writes a file, which stages whatever credential it carries.
-  const ev = { post: event === "PostToolUse", taint: taintIds.length > 0, taintIds, credFile: false, secret: false, cred: false, writes: false, encode: false, archive: false, out: false, outKind: "", hosts: [], bytes: 0, read: false, weight: 0 };
+  const ev = { post: event === "PostToolUse", taint: taintIds.length > 0, taintIds, credFile: false, secret: false, cred: false, writes: false, encode: false, archive: false, split: false, stage: false, out: false, outKind: "", hosts: [], bytes: 0, read: false, weight: 0 };
   let w = 0;
   for (const id of ids) {
     if (TAINT_THREATS.has(id) && inbound) w += 4;
@@ -157,11 +162,13 @@ export function classifyEvent({ event, tool, identity, textLen = 0, findings = [
     ev.cred = ev.credFile || (secret && ev.writes);
     ev.encode = ENCODE.test(id);
     ev.archive = ARCHIVE.test(id);
+    ({ split: ev.split, stage: ev.stage } = stagingFacts(id, { ps: t === "PowerShell" }));
     const up = actionTargets(t, { command: id }, []);
     const push = id.match(PUSH_URL);
     if (up && up.cls === "egress") { ev.out = true; ev.outKind = "upload"; ev.hosts = up.sites; ev.bytes = inlineBytes(id) + textLen; }
     else if (GIST.test(id)) { ev.out = true; ev.outKind = "gist"; ev.hosts = ["gist.github.com"]; ev.bytes = textLen; }
     else if (push && !LOOPBACK.test(push[1])) { ev.out = true; ev.outKind = "push"; ev.hosts = [siteOf(push[1].toLowerCase())]; ev.bytes = textLen; }
+    else if (GH_REPO_PUSH.test(id)) { ev.out = true; ev.outKind = "push"; ev.hosts = ["github.com"]; ev.bytes = textLen; }
     else {
       const d = dataUrlHosts(id, true);
       if (d.hosts.length) { ev.out = true; ev.outKind = "fetch"; ev.hosts = d.hosts; ev.bytes = d.bytes; }
@@ -182,7 +189,7 @@ export function classifyEvent({ event, tool, identity, textLen = 0, findings = [
 
 // ---- the session ----
 
-const F_CRED = 1, F_STAGE = 2, F_ARCH = 4, F_OUT = 8;
+const F_CRED = 1, F_STAGE = 2, F_ARCH = 4, F_OUT = 8, F_SPLIT = 16, F_SENS = 32;
 const MAX_STEPS = 32, MAX_KEYS = 256, TTL = 24 * 3600000;
 const num = (v) => typeof v === "number" && Number.isFinite(v);
 const obj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -257,6 +264,8 @@ const REASONS = {
   "cred-out": "credential read then outbound transfer in this session",
   "archive-out": "archive then outbound transfer in this session",
   "mass-read-out": "mass file read then transfer to a new destination in this session",
+  "split-out": "file split into chunks then outbound transfer in this session",
+  "stage-out": "sensitive location staged then outbound transfer in this session",
   "slow-exfil": "many small transfers to one destination in this session",
   score: "session risk score above threshold"
 };
@@ -297,6 +306,11 @@ export function assessSessionRisk(state, session, ev, now, cfg = sessionRiskConf
     const fresh = hostKeys.some((h) => !(h in s.hosts));
     const reads = Object.values(s.reads).filter((t) => now - t <= win).length;
     if (!cred && !arch && fresh && e.outKind !== "mcp" && e.bytes >= 4096 && reads >= cfg.massReads) hits.push({ kind: "sequence", rule: "mass-read-out", sig: { rule: "mass-read-out", reads, steps: 0 } });
+    // Chunked (T1030) and staged (T1074.001) data going out: an earlier step of the window, or this same call.
+    const split = e.split ? [n] : [...recent].reverse().find((x) => x[2] & F_SPLIT);
+    if (split) hits.push({ kind: "sequence", rule: "split-out", sig: { rule: "split-out", staged: true, steps: n - split[0] } });
+    const sens = e.stage ? [n] : [...recent].reverse().find((x) => x[2] & F_SENS);
+    if (!cred && sens) hits.push({ kind: "sequence", rule: "stage-out", sig: { rule: "stage-out", staged: true, steps: n - sens[0] } });
     addW += fresh ? 2 : 1;
     const b = num(e.bytes) ? Math.max(0, Math.round(e.bytes)) : 0;
     if (b > 0 && b <= cfg.slowChunkMax && hostKeys.length) {
@@ -327,7 +341,7 @@ export function assessSessionRisk(state, session, ev, now, cfg = sessionRiskConf
 
   if (e.taint) { s.taintUntil = now + win; s.taintAt = now; s.taintIds = [...new Set([...s.taintIds, ...e.taintIds])].sort((a, b) => a - b).slice(0, 16); }
   if (e.read && typeof e.readKey === "string") { s.reads[e.readKey] = now; cap(s.reads, MAX_KEYS); }
-  const flags = (e.cred ? F_CRED : 0) | (e.encode || e.archive || (e.cred && e.writes) ? F_STAGE : 0) | (e.archive ? F_ARCH : 0) | (e.out ? F_OUT : 0);
+  const flags = (e.cred ? F_CRED : 0) | (e.encode || e.archive || (e.cred && e.writes) ? F_STAGE : 0) | (e.archive ? F_ARCH : 0) | (e.out ? F_OUT : 0) | (e.split ? F_SPLIT : 0) | (e.stage ? F_SENS : 0);
   if (pre && flags) { s.steps.push([n, now, flags]); s.steps = s.steps.slice(-MAX_STEPS); }
 
   // Origin taint (data/origin-taint.js). Set before the gate below, so a command that reads an outside file and

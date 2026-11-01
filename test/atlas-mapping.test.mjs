@@ -97,6 +97,7 @@ const CREDITS = [
   [54, "AML.T0112", "exec-reverse-shell matches the payload shapes that hand a remote host interactive control of the machine through the agent"],
   [55, "AML.T0098", "cred-file-access matches the agent using a tool to read credential files and the keychain"],
   [56, "AML.T0101", "mcp-destructive-call matches the irreversible operation invoked through a TOOL rather than a shell"],
+  [59, "AML.T0085", "cli/mcp-harvest.mjs counts the reads an agent makes through ONE MCP server per session against read and byte budgets and flags dump-shaped queries — collection volume, which the trifecta's capability co-occurrence (AML.T0057) does not measure"],
   [60, "AML.T0081", "the index stage scans data/skill-surface.js's auto-loaded agent-configuration paths and re-alerts on mid-session poisoning or baseline drift"],
   [60, "AML.T0110", "the tool stage scans an MCP tool's model-visible description and schema for directives its stated function does not justify"],
   [62, "AML.T0060", "inspectInstall classifies the package NAME offline as a known-bad or typosquat near-miss — the adversary-registered entity behind a hallucination"],
@@ -116,7 +117,9 @@ const PARTIAL = [
   [73, "AML.T0092", "local agent transcript files only"],
   [75, "AML.T0067", "links only"],
   [76, "AML.T0011.000", "load calls only"],
-  [77, "AML.T0035", "model files and caches, one command"]
+  [77, "AML.T0035", "model files and caches, one command"],
+  [59, "AML.T0085", "reads through MCP tools, per server and session"],
+  [94, "AML.T0132", "MoorAI's MCP gateway, and its model proxy in enforce mode, under agentIdentity require; any process of the same OS user can mint a token"]
 ];
 
 test("ATLAS-MAP: the bounded new credits state their limit", () => {
@@ -148,7 +151,19 @@ test("ATLAS-MAP: the techniques the re-map rejected stay uncredited", () => {
     [66, "AML.T0103", "the same orphan-subagent detector already credited for AML.T0118"],
     [57, "AML.T0011", "a downstream consequence of the AML.T0010 credit on the same evidence"],
     [46, "AML.T0081", "host security posture is not the AI agent's configuration"],
-    [63, "AML.T0081", "the detector decides the DESTINATION host, not a configuration change"]
+    [63, "AML.T0081", "the detector decides the DESTINATION host, not a configuration change"],
+    // v1.47.0 audit of the v1.46 mechanisms.
+    [57, "AML.T0060", "the MCP package policy's typosquat and unpublished-name codes sit inside AML.T0010 (ATLAS's AI Software text names hallucinated package names), already credited on #57; #62 holds AML.T0060"],
+    [57, "AML.T0109", "pinning an MCP server package stops a malicious update, one path to the AML.T0010 compromise already credited on #57 (ATLAS's AI Software text names the rug pull)"],
+    [57, "AML.T0110", "the known-compromised releases carry conventional malware in a package; ATLAS files that as a software supply-chain compromise, not tool poisoning"],
+    [91, "AML.T0110", "the includeContext check is the one mechanism already credited AML.T0057 on #91"],
+    [91, "AML.T0099", "a sampling request is written by the MCP server itself, not data a benign tool retrieves from a source"],
+    [92, "AML.T0086", "the over-sharing signal is the one mechanism already credited AML.T0057 on #92; a second technique on the same signal is a restatement"],
+    [93, "AML.T0124", "cascade limits count spawns, depth, failing calls and denials; they do not observe how work is allocated, validated or redirected across agents"],
+    [93, "AML.T0117", "the denial hold counts refusals; it does not observe an agent revising its path, and a path that draws no denial is not seen"],
+    [93, "AML.T0118", "a spawn-rate cap counts spawns, not what agents exchange; #66 holds AML.T0118"],
+    [94, "AML.T0012", "the agent identity token is MoorAI's own: a copied one gives nothing a process of the same user cannot mint"],
+    [94, "AML.T0091.000", "the agent identity token is MoorAI's own: a copied one gives nothing a process of the same user cannot mint"]
   ];
   const wrong = REJECTED.filter(([threatId, id]) => idsOf(threatId).includes(id))
     .map(([threatId, id, why]) => `#${threatId} credits ${id} — rejected because ${why}`);
@@ -166,8 +181,9 @@ test("ATLAS-MAP: distinct technique coverage, in and out of the Agentic AI set",
 
   assert.equal(scored, 76, "the scored Agentic AI set is 76 top-level techniques");
   // v1.41.0 adds AML.T0103 (#88), AML.T0109 (#25) and AML.T0132 (#89), all three in the Agentic AI set.
-  assert.equal(distinct.size, 36, "distinct ATLAS techniques credited across the rule base");
-  assert.equal(agenticTop.length, 34, "credited techniques inside the 76-technique Agentic AI set");
+  // v1.47.0 adds AML.T0085 (#59, MCP read budgets), in the Agentic AI set; #94's AML.T0132 was already credited.
+  assert.equal(distinct.size, 37, "distinct ATLAS techniques credited across the rule base");
+  assert.equal(agenticTop.length, 35, "credited techniques inside the 76-technique Agentic AI set");
 });
 
 // ---------------------------------------------------------------------------------------------

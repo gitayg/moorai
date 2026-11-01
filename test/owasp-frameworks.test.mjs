@@ -133,6 +133,7 @@ const AGENTIC = [
   [48, "ASI03", "identity and credential creation, gated on human approval", "action-credential-create matches create-access-key, adduser, service-account creation"],
   [55, "ASI03", "local credential files and keychain only", "cred-file-access matches the agent reading the authentication material it runs with"],
   [66, "ASI03", "the parent's entitlement envelope applied to a delegated sub-agent", "the hook applies the parent's envelope to an Agent/Task delegation"],
+  [94, "ASI03", "agent session identity at the MCP gateway and the model proxy: revoked sessions refused, and under require any identity that is absent, expired, invalid or foreign; any process of the same OS user can mint a token, no per-tool authorization", "judgeIdentity (cli/agent-session-identity.mjs) at the MCP gateway and the model proxy; identity alerts post #94"],
   [25, "ASI04", "approved-connector allow-list only", "policy.mcpAllow refuses a call to a third-party server off the list"],
   [57, "ASI04", "known-compromised package releases denied at install and MCP launch; MCP server packages held by version pin and critical checks", "the shipped and signed known-compromised list (cli/package-known-bad.mjs) at install and MCP launch, and mcpPackagePolicy pins and critical checks on MCP server packages"],
   [50, "ASI04", "hidden characters in MCP tool metadata only", "mcp-hidden-canary runs at the tool stage on tools/list"],
@@ -156,7 +157,7 @@ const AGENTIC = [
 ];
 
 const MCP = [
-  [39, "MCP01", "secret values in prompts and output; token lifetime and storage are not assessed", "twenty secret-shape detectors block or mask a live credential entering the model's context"],
+  [39, "MCP01", "secret values in prompts and output, and in the client's answer to an MCP sampling or elicitation request (guard and gateway); token lifetime and storage are not assessed", "twenty secret-shape detectors block or mask a live credential entering the model's context, and mcp-proxy/sampling-response.mjs runs them on a sampling or elicitation answer"],
   [55, "MCP01", "local credential files and keychain only", "cred-file-access and secret-file-upload"],
   [65, "MCP01", "known local secret values in egress, MCP tool arguments included", "secret-value fingerprint matched on egress"],
   [46, "MCP02", "IAM, sudo and security-setting changes, gated on human approval", "action-security-config"],
@@ -175,10 +176,11 @@ const MCP = [
   [70, "MCP06", "content addressed only to AI readers", "cloak-ai-audience"],
   [72, "MCP06", "file-metadata channel only", "metadata directive scan"],
   [74, "MCP06", "self-replication directives only", "inj-self-replication"],
+  [94, "MCP07", "the MCP gateway verifies a device-signed, short-lived agent session token per request, refuses a revoked session, and under require one that is absent, expired, invalid or foreign; any process of the same OS user can mint a token, no mutual TLS, no per-tool or per-role authorization, the MCP server's own authorization is not seen", "gateIdentity (mcp-gateway/identity.mjs) refuses before the upstream is contacted; identity alerts post #94"],
   [73, "MCP08", "tampering with local agent transcript files only", "agent-history-tamper protects the agent's own record of what it did"],
   [25, "MCP09", "calls to servers off the approved allow-list; the AIBOM lists configured and listening servers but raises no finding", "policy.mcpAllow"],
   [91, "MCP10", "includeContext on MCP sampling requests at the MCP guard and gateway; other context sharing between users or sessions is not observed", "includeContext on sampling requests, judged by mcp-proxy/sampling-scan.mjs at the stdio guard and the HTTP gateway"],
-  [92, "MCP10", "what an agent sends in one MCP call (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed", "the over-sharing signal in cli/mcp-outbound.mjs, merged into mcpGateway on every MCP surface"]
+  [92, "MCP10", "what an agent sends in one MCP call or one sampling / elicitation answer (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed", "the over-sharing signal in cli/mcp-outbound.mjs, merged into mcpGateway on every MCP surface and run on sampling / elicitation answers (mcp-proxy/sampling-response.mjs)"]
 ];
 
 for (const [label, f, table] of [["Agentic", FW[0], AGENTIC], ["MCP", FW[1], MCP]]) {
@@ -218,7 +220,11 @@ test("OWASP-MAP: the credits the review rejected stay uncredited", () => {
     [62, "owaspMcp", "MCP04", "general-purpose package names; MCP server names are checked by the reputation layer, which posts under no rule"],
     [2, "owaspMcp", "MCP06", "MCP06 excludes a user's own direct injection by definition"],
     [61, "owaspMcp", "MCP05", "code written into the project, not a command the agent runs"],
-    [43, "owaspMcp", "MCP05", "destructive, not injected"]
+    [43, "owaspMcp", "MCP05", "destructive, not injected"],
+    // v1.47.0: OWASP's ASI02 item text could not be read (the document download is gated), so the paste-site and
+    // code-repository rules carry no ASI02 credit; #78 and #86 hold ASI02 for the same exfiltration shape.
+    [95, "owaspAgentic", "ASI02", "item text not verified at v1.47.0; #78 and #86 hold ASI02 for the same shape"],
+    [96, "owaspAgentic", "ASI02", "item text not verified at v1.47.0; #78 and #86 hold ASI02 for the same shape"]
   ];
   const wrong = REJECTED.filter(([rule, key, id]) => (byId.get(rule)[key] || []).includes(id))
     .map(([rule, , id, why]) => `#${rule} credits ${id} — rejected because ${why}`);
@@ -245,11 +251,11 @@ test("OWASP-MAP: Agentic coverage — 1 covered, 9 partial, none uncovered", () 
   assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), []);
 });
 
-test("OWASP-MAP: MCP coverage — 1 covered, 8 partial, MCP07 uncovered", () => {
+test("OWASP-MAP: MCP coverage — 1 covered, 9 partial, none uncovered", () => {
   const c = coverage(FW[1]);
   assert.deepEqual(Object.keys(c).filter((k) => c[k] === "covered"), ["MCP06"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["MCP01", "MCP02", "MCP03", "MCP04", "MCP05", "MCP08", "MCP09", "MCP10"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), ["MCP07"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["MCP01", "MCP02", "MCP03", "MCP04", "MCP05", "MCP07", "MCP08", "MCP09", "MCP10"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), []);
 });
 
 test("OWASP-MAP: the readers normalise a missing or malformed tag to []", () => {

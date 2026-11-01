@@ -46,3 +46,5 @@ export const agentNamesLib = await load("cli/agent-names.mjs");
 export const intentServerLib = await load("data/intent-server.mjs");
 export const taskBoundLib = await load("data/task-bound.js");
 export const cascadeLib = await load("data/cascade-limits.js");
+export const repoPushLib = await load("cli/repo-push.mjs");
+export const exfilChannelsLib = await load("data/exfil-channels.js");

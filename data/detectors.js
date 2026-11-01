@@ -18,8 +18,10 @@ import { MODEL_DOWNLOAD_DETECTORS } from "./detectors-model-download.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
 import { CLOUD_METADATA_DETECTORS } from "./detectors-cloud-metadata.js";
+import { CRED_ACCESS_DETECTORS } from "./detectors-cred-access.js";
 import { poisoningDetectors } from "./detectors-poisoning.js";
 import { netExecDetectors } from "./detectors-net-exec.js";
+import { EXFIL_DETECTORS } from "./detectors-exfil.js";
 import { SKILL_HIDING_DETECTORS } from "./detectors-skill-hiding.js";
 import { AGENT_DEPLOY_DETECTORS } from "./detectors-agent-deploy.js";
 import { withRestart } from "../src/regex-restart.js";
@@ -397,7 +399,12 @@ export const CONTAINER_ESCAPE = [
 // is routine and stays silent (test/ide-extension-install.test.mjs).
 export const IDE_EXTENSION_INSTALL = [
   /(?<![\w-])(?:code|code-insiders|cursor|windsurf|codium|vscodium)\b[^\n;|&]{0,60}?--install-extension\s+["']?(?:https?:\/\/|[^\s"';|&]{0,200}?\.vsix\b)/i,
-  /(?<![\w-])(?:cp|mv|unzip|tar|bsdtar|ditto|Copy-Item|Expand-Archive|Move-Item)\b[^\n;|&]{0,200}?[\/\\]\.(?:vscode|vscode-server|vscode-insiders|cursor|windsurf)[\/\\]extensions\b/i
+  /(?<![\w-])(?:cp|mv|unzip|tar|bsdtar|ditto|Copy-Item|Expand-Archive|Move-Item)\b[^\n;|&]{0,200}?[\/\\]\.(?:vscode|vscode-server|vscode-insiders|cursor|windsurf)[\/\\]extensions\b/i,
+  // The same by link, sync, clone or download, into the forks' and remote servers' extension directories, a
+  // JetBrains plugins directory or an Eclipse dropins folder; and a JetBrains installPlugins from a custom
+  // plugin repository URL (the marketplace form names only plugin ids).
+  /(?<![\w-])(?:cp|mv|ln|rsync|install|ditto|unzip|tar|bsdtar|7zz?|git\s+clone|curl|wget|Copy-Item|Move-Item|Expand-Archive|New-Item)\b[^\n;|&]{0,200}?(?:[\/\\]\.(?:vscode|vscode-insiders|vscode-server|vscode-server-insiders|vscode-oss|cursor|cursor-server|windsurf|windsurf-server)[\/\\]extensions\b|JetBrains[\/\\][^\s\/\\;|&]{1,80}[\/\\]plugins\b|eclipse[^\s;|&]{0,120}?[\/\\]dropins\b)/i,
+  /(?<![\w-])(?:idea|pycharm|webstorm|goland|clion|rider|phpstorm|rubymine|datagrip|rustrover|studio)(?:64)?(?:\.sh|\.exe|\.bat)?\s+installPlugins\b[^\n;|&]{0,300}?\bhttps?:\/\//i
 ];
 
 // Command Obfuscation (ATT&CK T1027.010): the agent runs a command whose real payload is base64- or
@@ -1036,6 +1043,9 @@ export const DETECTORS = [
       /\bmkfifo\b[^\n]{0,40}\|[^\n]{0,40}\b(sh|bash)\b/i
     ]
   },
+  // #55 read structurally (data/detectors-cred-access.js). Before cred-file-access: the engine keeps the
+  // last warn finding of a threat, so where both fire the pattern detector is the one reported.
+  ...CRED_ACCESS_DETECTORS,
   {
     // #55 (LLM02) — the agent reads a credential / secret file. Prompt + output (agent proposes the read).
     // Anchored on read verbs + credential paths, plus a few bare high-signal paths.
@@ -1056,11 +1066,11 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Reads a credential / secret file (.env, cloud creds, SSH key, /etc/shadow).",
     patterns: [
-      /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config|\.config[\/\\]gh[\/\\]hosts\.yml|msal_token_cache(?:\.bin)?|access_tokens\.db)/i,
+      /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+(?![a-z0-9]|\.pub\b)|\.npmrc\b(?!\.(?:example|sample|template)\b)|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config|\.config[\/\\]gh[\/\\]hosts\.yml|msal_token_cache(?:\.bin)?|access_tokens\.db)/i,
       // Lookbehind: start only at the first ~ or / of a run, the one start that could win. Without it each
       // "/" of "a/a/a…" was a start (60k: 1.5s, now 0.2ms). See test/cred-file-access-redos.test.mjs.
       /(?<![~\/][^\s"']*?)[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
-      /\.ssh[\/\\]id_(rsa|ed25519|ecdsa|dsa)\b/i,
+      /\.ssh[\/\\]id_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub\b)/i,
       /(^|[\s"'=])\/etc\/shadow\b/,
       /\.git-credentials\b/i,
       /\bsecurity\s+find-generic-password\b/i,
@@ -1814,6 +1824,8 @@ DETECTORS.push(...poisoningDetectors(DETECTORS));
 DETECTORS.push(...netExecDetectors(DETECTORS));
 // An agent launching, installing or scheduling another agent (#88): data/detectors-agent-deploy.js.
 DETECTORS.push(...AGENT_DEPLOY_DETECTORS);
+// Data posted to a paste site, gist or snippet (ATT&CK T1567.003): data/detectors-exfil.js.
+DETECTORS.push(...EXFIL_DETECTORS);
 // Hiding techniques in skill and instruction files (padding, HTML comments, concealment from the user, text
 // aimed at reviewers, persistence into memory) go LAST, so where another detector of the same threat also
 // fires, the engine keeps the specific one and skill triage names it (data/detectors-skill-hiding.js).

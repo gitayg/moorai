@@ -169,9 +169,11 @@ test("PowerShell file reads get their CONTENT scanned (#39 block): Get-Content, 
   });
 });
 
-test("#55 on a PowerShell-resolved path: `gc .env` asks under PowerShell (the command text alone never matched)", async () => {
+// The control used to assert that `gc .env` as Bash COMMAND TEXT hit nothing; the structural reader
+// (data/cred-access.js) now reads any command given a credential file, so it asks there too. The path
+// resolution is still what the PowerShell asserts below exercise.
+test("#55 on a PowerShell-resolved path: `gc .env` asks under PowerShell", async () => {
   await withPolicy({ captureTier: "content-free" }, async (sb) => {
-    assert.equal(decisionOf(await runHook(sb, pre("Bash", "gc .env"))), "allow", "control: as COMMAND TEXT `gc .env` hits nothing");
     const r = await runHook(sb, pre("PowerShell", "gc .env"));
     assert.equal(decisionOf(r), "ask", r.out);
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /#55/);

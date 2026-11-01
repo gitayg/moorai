@@ -23,6 +23,8 @@
 // override a shell COMMAND sets is a property of the call and is decided below, as in the hook. With no
 // policy, all of these are report-only in the hook too, so the verdict matches; with a policy that arms
 // one of them (transitAllow for "transit-env"), the hook can be stricter than this function.
+// "repo-push-session": a push to a remote an EARLIER call of the session added (cli/repo-push-state.mjs) needs
+// the hook's session record; the one-command form (cli/repo-push.mjs) is decided below, as in the hook.
 // "mxc-containment" (v1.18.0, cli/containment-enforce.mjs) is hook-only too. containmentRequired judges the
 // Codex / Copilot CLI host the shim names and that host's own config files on a Windows device;
 // containmentClaudeCode "wrap" rewrites a Bash call through updatedInput, which this runtime cannot do
@@ -32,10 +34,10 @@
 // this function (data/intent-server.mjs, in memory), as the hook's intentStep runs after its branch verdict.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
-import { hookCore, mcpFileArgs, secretEgress, secretLearnLib, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
+import { hookCore, mcpFileArgs, secretEgress, secretLearnLib, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib, repoPushLib, exfilChannelsLib } from "./core.mjs";
 
 const {
-  decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, decideAuthorizedKeysWrite, isEnvTemplate, fileScanText,
+  decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, decideAuthorizedKeysWrite, decidePersistenceWrite, decideShellCiWrite, isEnvTemplate, fileScanText,
   decodedCommandPayloads, decideTransit, decideThreat,
   decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor, decideMcpToolClass,
   saferAlternativesFor, PS_OUTBOUND_UPLOAD, evaluateProfile, rejectedAlert, readRootOwned
@@ -55,7 +57,7 @@ export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment", "repo-push-session"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {
@@ -209,6 +211,8 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (ps) merge(decideCredFileRead(engine, policy, p));
     }
     merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
+    // #32 / T1677 — a shell write into a pipeline definition: the hook's same step.
+    merge(decideShellCiWrite(policy, command));
     // Base64/hex payloads the command decodes straight into a shell (T1027.010), as the hook adds them to
     // the scripts it re-scans: a pure function of the command, so decided here exactly as there.
     const scripts = decodedCommandPayloads(command);
@@ -221,6 +225,8 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       else if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
     }
     for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
+    // T1567.001, the hook's step on this one command (cli/repo-push.mjs); remotes an earlier call added are hook-only.
+    if (repoPushLib.repoPushVerdict({ command, ps, cwd: base, policy }).hits.length) merge(decideThreat(policy, exfilChannelsLib.CODE_REPO_THREAT, "code-repo-push"));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     { const sv = secretEgressBlocks(policy, ti.command, cwd, "egress", signals, cmdEgress ? secretTracker : null, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }
@@ -242,6 +248,11 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     d.findings.push(...kd.findings);
     if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; }
     if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
+    // #46 / #57 — a cron table, launchd plist, editor extension directory, or a startup file given a fetch/exec.
+    const pw = decidePersistenceWrite(policy, { tool, path, input: ti }, { cwd });
+    d.findings.push(...pw.findings);
+    if (RANK[pw.decision] > RANK[dec]) { dec = pw.decision; reasons = pw.reasons; alts = pw.alternatives; }
+    if (pw.kill) { d.kill = true; d.killIds.push(...pw.killIds); }
     const epD = decideEndpoints(policy, text);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     if (secretEgressBlocks(policy, text, cwd, "file", signals, null, systemConfig) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }

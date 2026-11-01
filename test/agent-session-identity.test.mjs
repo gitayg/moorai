@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,13 +80,21 @@ test("judgeIdentity: report mode records, refuses only a revoked session; requir
   assert.deepEqual(judgeIdentity(tok, { policy: { agentIdentity: { mode: "off" }, revokedAgentSessions: [sid] }, publicKey: pub, now: T0 }), { record: null, refuse: null, alert: false });
   // Malformed policy values fall back; a malformed revocation entry is ignored.
   const cfg = identityConfig({ agentIdentity: { mode: "bogus", maxTokenSeconds: 5, maxSessionSeconds: "x" }, revokedAgentSessions: ["asi-short", 7, sid] });
-  assert.deepEqual({ ...cfg, revoked: [...cfg.revoked] }, { mode: "report", maxTokenSec: 86400, maxSessionSec: 86400, revoked: [sid] });
+  assert.deepEqual({ ...cfg, revoked: [...cfg.revoked] }, { mode: "report", maxTokenSec: 86400, maxSessionSec: 86400, requireOwner: false, revoked: [sid] });
 });
 
 test("identityAlert is content-free: ids, a status enum and a fixed hash", () => {
   const a = identityAlert({ status: "revoked", id: "asi-0123456789abcdef", agentName: "claude-code" }, { refused: true, surfacePrefix: "gateway" });
-  assert.deepEqual(a, { threatId: 0, category: "Agent identity: revoked", riskLevel: "Blocked", stage: "identity", tool: "gateway:identity", decision: "deny", reasonCode: "AGENT_IDENTITY", contentHash: "agent-identity:revoked", agentSession: { status: "revoked", id: "asi-0123456789abcdef", agentName: "claude-code" } });
+  assert.deepEqual(a, { threatId: 94, category: "Agent identity: revoked", riskLevel: "Blocked", stage: "identity", tool: "gateway:identity", decision: "deny", reasonCode: "AGENT_IDENTITY", contentHash: "agent-identity:revoked", agentSession: { status: "revoked", id: "asi-0123456789abcdef", agentName: "claude-code" } });
   assert.equal(identityAlert({ status: "<script>" }, { refused: false, surfacePrefix: "model-proxy" }).category, "Agent identity: invalid");
+});
+
+test("identity alerts report under rule #94, which credits OWASP MCP07 and ASI03 as bounded credits", () => {
+  const rule = JSON.parse(readFileSync(join(ROOT, "data", "threats.json"), "utf8")).threats.find((t) => t.id === 94);
+  assert.ok(rule, "data/threats.json has rule #94");
+  assert.equal(identityAlert({ status: "absent" }, { refused: true, surfacePrefix: "gateway" }).threatId, 94);
+  assert.equal(identityAlert({ status: "expired" }, { refused: false, surfacePrefix: "model-proxy" }).threatId, 94);
+  assert.deepEqual([rule.owaspMcp, rule.owaspAgentic, Object.keys(rule.owaspMcpPartial), Object.keys(rule.owaspAgenticPartial)], [["MCP07"], ["ASI03"], ["MCP07"], ["ASI03"]]);
 });
 
 test("registrationRecord: signed over the canonical string with the device key", () => {

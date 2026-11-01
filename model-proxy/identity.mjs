@@ -6,6 +6,7 @@
 // the request raises (./report.mjs REQUEST). Each distinct verdict is posted once per process.
 import { judgeIdentity, identityAlert, devicePublicKey, IDENTITY_HEADER } from "../cli/agent-session-identity.mjs";
 import { ENFORCEMENT } from "../cli/provenance.mjs";
+import { localOwner } from "../cli/owner-verify.mjs";
 
 export { IDENTITY_HEADER };
 
@@ -14,10 +15,10 @@ export function createIdentityGate(rt, { enforce }) {
   // current: the request's REQUEST store. → { status, message } to refuse with, or null.
   return async function gate(req, current) {
     const s = await rt.ready();
-    const v = judgeIdentity(req.headers[IDENTITY_HEADER], { policy: s.policy, publicKey: devicePublicKey() });
+    const v = judgeIdentity(req.headers[IDENTITY_HEADER], { policy: s.policy, publicKey: devicePublicKey(), owner: localOwner(rt.config.tenant) });
     if (v.record) current.agentSession = v.record;
     const refuse = v.refuse && enforce ? v.refuse : null;
-    const k = `${v.record && v.record.status}|${(v.record && v.record.id) || ""}|${refuse ? 1 : 0}`;
+    const k = `${v.record && v.record.status}|${(v.record && v.record.id) || ""}|${(v.record && v.record.owner && v.record.owner.status) || ""}|${refuse ? 1 : 0}`;
     if (v.alert && !seen.has(k) && seen.size < 1024) {
       seen.add(k);
       try {

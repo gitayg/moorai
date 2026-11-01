@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.46.3",
+  "version": "1.47.1",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -65,6 +65,7 @@
     "mcp-proxy/tool-drift.mjs",
     "mcp-proxy/tool-recheck.mjs",
     "mcp-proxy/sampling-scan.mjs",
+    "mcp-proxy/sampling-response.mjs",
     "cloud/",
     "packages/agent-sdk/src/"
   ],

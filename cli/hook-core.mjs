@@ -18,6 +18,9 @@ import { dirname, join } from "node:path";
 import os from "node:os";
 import { DETECTORS, CLIPBOARD_READ, OUTBOUND_UPLOAD } from "../data/detectors.js";
 import { agentStateWriteProbe } from "../data/agent-state-paths.js";
+import { persistencePathKind, rcPayloadHit } from "../data/persistence.js";
+import { ciPipelinePoisoningHit, isCiPath } from "../data/ci-pipeline.js";
+import { shellWritesTo } from "../data/poisoning-tells.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved, PROXY_ENV_VARS, CA_ENV_VARS } from "../data/model-endpoints.js";
@@ -30,6 +33,7 @@ import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
+import { credPathKind, privateKeyText } from "../data/cred-paths.js";
 import { mcpArgCommandInjection } from "../data/detectors-mcp-arg-injection.js";
 import { mergeOutbound } from "./mcp-outbound.mjs";
 // Declared workload profiles (cli/workload-profile.mjs), re-exported so every surface that composes this
@@ -379,9 +383,26 @@ export function isEnvTemplate(path) {
 // cred-file-access; a Read carries only the path and was never checked against #55 at all. Probing the
 // same detector with the equivalent read command gives a Read exactly the verdict the `cat` gets —
 // no stricter — and only #55 is consulted, so a filename cannot trip any other prompt detector.
+//
+// The `cat <path>` probe meets cred-file-access's fixed path list; a store only the structural reader knows
+// (data/cred-paths.js: more token stores, keys by location and extension, Linux browser profiles, the
+// keychain database, the BSD and macOS hash stores) is probed a second time with the path quoted, so a
+// Windows path or one with spaces reads whole. History files are not judged on a whole read (by design).
 export function decideCredFileRead(engine, policy, path) {
   if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
-  return decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
+  const d = decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
+  if (d.findings.length) return d;
+  const kind = credPathKind(path);
+  if (!kind || kind === "history") return d;
+  return decideText(engine, policy, `cat '${path.replace(/'/g, "'\\''")}'`, "prompt", { only: [55] });
+}
+
+// #55 / T1552.004 on a file's CONTENT: the file is a private key (its first line is a PEM, OpenSSH, PGP or
+// PuTTY private-key header), whatever it is named. A path the location rules already name is left to them
+// (one finding per read). Decided like a structural finding (decideThreat); no part of the file reaches it.
+export function decideCredContent(policy, text, path = "") {
+  if (credPathKind(path) || !privateKeyText(text)) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  return decideThreat(policy, 55, "private-key-file", "prompt");
 }
 
 // #73 for the Write/Edit family. Those tools carry the target only in file_path, and the write branch
@@ -401,6 +422,60 @@ export function decideAgentStateWrite(engine, policy, path) {
 export function decideAuthorizedKeysWrite(engine, policy, path) {
   if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
   return decideText(engine, policy, `tee -a ${JSON.stringify(path)}`, "prompt", { only: [48] });
+}
+
+// #46 / ATT&CK T1053.003, T1543.001, T1546.004 and #57 / T1176.002 for a file-writing tool (Write, Edit,
+// MultiEdit, an MCP filesystem write): the target is only in the path, so data/persistence.js
+// persistencePathKind classifies it. A cron table or launchd plist is a foothold whatever is written; an editor
+// extension or plugin directory is a side-load; a shell startup file counts only when the text the call ADDS
+// (Write: lines not already in the file, read up to 1 MiB; Edit: new_string lines not in old_string; an append
+// or a move's source text whole) is a fetch, exec, capture or temp-dir launch (rcPayloadHit). With ci, a write
+// to a pipeline definition gets #32's check too (the Write branch already runs it as a detector).
+// call: { tool: "Write" | "Edit" | "MultiEdit" | "Path", path, input, append?, from? }. Content-free findings.
+const FOOTHOLD_READ_MAX = 1_048_576;
+function footholdRead(abs) {
+  try { const st = statSync(abs); if (!st.isFile() || st.size > FOOTHOLD_READ_MAX) return null; return readFileSync(abs, "utf8"); } catch { return null; }
+}
+function footholdAbs(path, cwd) {
+  const p = String(path).replace(/^file:\/\//i, "");
+  if (p === "~" || p.startsWith("~/")) return join(os.homedir(), p.slice(2));
+  if (/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(p)) return p;
+  return join(typeof cwd === "string" && cwd ? cwd : process.cwd(), p);
+}
+const addedLines = (before, after) => { const had = new Set(String(before || "").split("\n").map((l) => l.trim())); return String(after || "").split("\n").filter((l) => l.trim() && !had.has(l.trim())).join("\n"); };
+function footholdAdded(call, abs) {
+  const ti = call.input || {};
+  if (call.tool === "Edit") return addedLines(ti.old_string, ti.new_string);
+  if (call.tool === "MultiEdit") return (Array.isArray(ti.edits) ? ti.edits : []).map((e) => (e && typeof e.new_string === "string" ? addedLines(e.old_string, e.new_string) : "")).join("\n");
+  if (call.tool === "Write" && call.from) return [].concat(call.from).map((f) => footholdRead(footholdAbs(f, call.cwd)) || "").join("\n");
+  const text = typeof ti.content === "string" ? ti.content : "";
+  return call.append ? text : addedLines(footholdRead(abs), text);
+}
+export function decidePersistenceWrite(policy, call, { cwd = "", ci = false } = {}) {
+  const none = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  if (!call || typeof call.path !== "string" || !call.path || /[\r\n]/.test(call.path)) return none;
+  const abs = footholdAbs(call.path, cwd);
+  const kind = persistencePathKind(call.path) || persistencePathKind(abs);
+  if (kind === "cron" || kind === "launchd") return decideThreat(policy, 46, "agent-persistence-write", "output");
+  if (kind === "ide-extension") return decideThreat(policy, 57, "ide-extension-write", "output");
+  if (call.tool === "Path") return none;
+  if (kind === "shell-rc") return rcPayloadHit(footholdAdded({ ...call, cwd }, abs)) ? decideThreat(policy, 46, "agent-persistence-write", "output") : none;
+  if (ci && (isCiPath(call.path) || isCiPath(abs))) {
+    const ti = call.input || {};
+    const text = call.tool === "Edit" ? ti.new_string : call.tool === "MultiEdit" ? (Array.isArray(ti.edits) ? ti.edits.map((e) => (e && e.new_string) || "").join("\n") : "") : call.from ? footholdAdded({ ...call, cwd }, abs) : ti.content;
+    if (typeof text === "string" && ciPipelinePoisoningHit(text, { targetPath: call.path })) return decideThreat(policy, 32, "ci-pipeline-poisoning", "output");
+  }
+  return none;
+}
+
+// #32 / ATT&CK T1677 for a shell command that writes a pipeline definition (redirect, tee, heredoc,
+// Add-Content / Set-Content / Out-File): the text written into it gets ciPipelinePoisoningHit, as a Write of
+// that text to that path does (data/poisoning-tells.js shellWritesTo).
+export function decideShellCiWrite(policy, command) {
+  for (const w of shellWritesTo(typeof command === "string" ? command : "", isCiPath)) {
+    if (ciPipelinePoisoningHit(w.text, { targetPath: w.path })) return decideThreat(policy, 32, "ci-pipeline-poisoning", "output");
+  }
+  return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
 }
 
 // What the text detectors get to see of a file's first 256 KB (the hook's readFileCapped calls this).
@@ -2099,6 +2174,15 @@ function policyKeys() {
 // ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
 
 function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY_PIN), secondary: readText(POLICY_PIN_LATCH), legacy: readText(POLICY_PIN_LEGACY) }); }
+// The device's policy trust (anchor, else pin) without loading a policy: the stop watcher (cli/stop-watch.mjs) verifies
+// the console's stop document with it.
+export function currentPolicyTrust(config) { return policyTrust({ anchorKeys: policyKeys(), pin: readPolicyPin(), tenant: config.tenant }); }
+
+// The keys this device verifies console-signed data with: the policy's anchor, else its pin (policyTrust); [] when
+// unpinned, pinned for another tenant or corrupt. The owner assertion check reads it (cli/owner-assertion.mjs).
+export function policyTrustKeys(config) {
+  try { return policyTrust({ anchorKeys: policyKeys(), pin: readPolicyPin(), tenant: config && config.tenant }).keys; } catch { return []; }
+}
 
 // Learn (or roll forward) the pin from a policy that was just delivered FRESH over the network and
 // accepted. Three cases, and the difference between them is the whole security argument:

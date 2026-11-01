@@ -75,7 +75,7 @@ test("MODEL PROXY IDENTITY: verified identity on the request's alerts, header no
     assert.equal(fp.requests.length, n1, "a refused request reached the provider");
     assert.ok(await waitFor(() => con.alerts.some((x) => x.category === "Agent identity: revoked")));
     const rv = con.alerts.find((x) => x.category === "Agent identity: revoked");
-    assert.deepEqual([rv.riskLevel, rv.decision, rv.reasonCode, rv.agentSession.id, rv.tool], ["Blocked", "deny", "AGENT_IDENTITY", revoked, "model-proxy:identity"]);
+    assert.deepEqual([rv.threatId, rv.riskLevel, rv.decision, rv.reasonCode, rv.agentSession.id, rv.tool], [94, "Blocked", "deny", "AGENT_IDENTITY", revoked, "model-proxy:identity"]);
   } finally { await px.stop(); await con.close(); }
 });
 

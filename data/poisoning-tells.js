@@ -63,7 +63,9 @@ function heredocBodies(cmd) {
   }
   return out;
 }
-export function shellMemoryWrites(command) {
+export function shellMemoryWrites(command) { return shellWritesTo(command, memoryKind); }
+// The same read for any target class (isTarget(path) → truthy): data/ci-pipeline.js isCiPath uses it.
+export function shellWritesTo(command, isTarget) {
   const cmd = cap(command);
   if (!cmd || !/>|\btee\b|-Content\b|Out-File\b/i.test(cmd)) return [];
   const paths = new Set();
@@ -72,7 +74,7 @@ export function shellMemoryWrites(command) {
     let m;
     while ((m = re.exec(cmd)) !== null) {
       const p = unq(m[1]);
-      if (memoryKind(p)) paths.add(p);
+      if (isTarget(p)) paths.add(p);
     }
   }
   if (!paths.size) return [];
@@ -80,7 +82,7 @@ export function shellMemoryWrites(command) {
   const head = cmd.split(/<<-?\s{0,4}["']?[A-Za-z_][\w-]{0,30}["']?/)[0];
   const quoted = [...head.matchAll(/"((?:[^"\\\n]|\\.){1,4000})"|'([^'\n]{1,4000})'/g)].map((q) => (q[1] ?? q[2]).replace(/\\n/g, "\n"));
   const bare = [...head.matchAll(/\becho\s{1,4}(?:-[neE]{1,3}\s{1,4})?([^"'\n;&|<>]{3,4000}?)\s{0,4}(?=>|\||;|&|$)/g)].map((e) => e[1]);
-  const text = [...quoted, ...bare, ...bodies].filter((t) => t && !memoryKind(t.trim())).join("\n");
+  const text = [...quoted, ...bare, ...bodies].filter((t) => t && !isTarget(t.trim())).join("\n");
   return text.trim() ? [...paths].map((path) => ({ path, text })) : [];
 }
 

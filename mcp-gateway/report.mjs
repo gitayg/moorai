@@ -47,6 +47,7 @@ export function sessionTag(raw) {
 // Runs fn with the request's session as the context every post() under it (awaits and upstream
 // callbacks included) reads; a request with no session id runs with none, never an earlier request's.
 export function withSession(raw, fn) { return SESSION.run(sessionTag(raw), fn); }
+export function sessionOf() { return SESSION.getStore() || ""; }
 
 const TRACE = new AsyncLocalStorage();
 // Runs fn with the request's span (createTracer's result) as the trace every post() under it reads.

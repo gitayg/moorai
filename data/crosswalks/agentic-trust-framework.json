@@ -182,7 +182,9 @@
     {
       "id": "I-1",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "agent-session-identity"
       ],
@@ -191,12 +193,15 @@
     {
       "id": "I-2",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "agent-session-identity",
-        "gateway-identity"
+        "gateway-identity",
+        "owner-signin"
       ],
-      "limit": "the session identity is bound to the device's ed25519 key (another key is refused under require) and registrations are checked against the key the console pinned; the key is user-readable and the identity is not bound to upstream credentials"
+      "limit": "the session identity is bound to the device's ed25519 key (another key is refused under require) and registrations are checked against the key the console pinned; the human owner is bound to that key by a console-verified OpenID Connect ID token and a console-signed owner assertion the gateway and model proxy verify; the key is user-readable and the identity is not bound to upstream credentials"
     },
     {
       "id": "I-3",
@@ -242,14 +247,17 @@
     {
       "id": "B-2",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "action-audit",
         "provenance",
         "gateway-identity",
-        "model-proxy-identity"
+        "model-proxy-identity",
+        "owner-signin"
       ],
-      "limit": "each record carries a keyed actor hash and, for known agent sessions, a keyed session hash; MCP gateway and model proxy alerts also carry the verified agent session, which the console maps to its agt- identity and owner; hook alerts do not carry it"
+      "limit": "each record carries a keyed actor hash and, for known agent sessions, a keyed session hash; MCP gateway and model proxy alerts also carry the verified agent session and its verified signed-in owner (agentSession.owner), which the console maps to the session and the person bound to the device key; hook alerts do not carry either"
     },
     {
       "id": "B-3",
@@ -437,14 +445,17 @@
       "threats": [],
       "evidence": [
         "operator-stop",
-        "kill"
+        "kill",
+        "stop-channel"
       ],
-      "limit": "an administrator's stop in the console denies every further call of an agent session or of every agent on a device and SIGTERMs the agent process (macOS, Linux); it applies on the device's first hook call after its 60-second policy cache, not within a second, and an idle agent is stopped at its next call"
+      "limit": "with the stop channel (agent v1.47.0+, console v0.104.0+) an administrator's stop SIGTERMs the named sessions' agent processes on macOS and Linux, idle or not (measured stop to SIGTERM: p95 27 ms idle, 33 to 457 ms busy under heavy load, max 856 ms), and every call the hook decides after the watcher wrote the signed stop file is denied; Windows agents are denied but not signalled, and the watcher runs as the user, so a same-user process can kill it or delete the stop file, which leaves the 60-second policy path"
     },
     {
       "id": "R-3",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        94
+      ],
       "evidence": [
         "operator-stop",
         "gateway-identity",

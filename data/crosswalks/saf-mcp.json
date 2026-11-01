@@ -1522,14 +1522,20 @@
         40,
         60,
         50,
-        91
+        91,
+        39,
+        15,
+        90,
+        92,
+        97
       ],
       "evidence": [
         "sampling-scan",
+        "sampling-response",
         "stdio-proxy",
         "http-gateway"
       ],
-      "limit": "the request's content and includeContext are judged and refusable by signed policy at the MCP guard and gateway; no per-request user approval and no sampling rate or token budget"
+      "limit": "the request's content and includeContext, the answer's content (data-loss detectors, decoded base64, labels, over-sharing) and a per-session request and stated-token budget are judged and refusable by signed policy at the MCP guard and gateway; no per-request user approval, the budget counts stated maxTokens not generated tokens, and #65 local secret values are not matched in an answer"
     },
     {
       "id": "SAF-T1705",

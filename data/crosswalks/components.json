@@ -550,6 +550,21 @@
       "name": "Agent session identity checked at the model proxy (agentIdentity, revokedAgentSessions)",
       "path": "model-proxy/identity.mjs",
       "symbol": "export function createIdentityGate"
+    },
+    "sampling-response": {
+      "name": "MCP sampling and elicitation answer scan and sampling budget",
+      "path": "mcp-proxy/sampling-response.mjs",
+      "symbol": "export function gateClientAnswer"
+    },
+    "stop-channel": {
+      "name": "Operator stop channel: a held long-poll delivers a signed stop document; the watcher SIGTERMs the named sessions' agents and the hook denies from it",
+      "path": "cli/stop-channel.mjs",
+      "symbol": "export function stopChannelStep"
+    },
+    "owner-signin": {
+      "name": "Owner sign-in: the person signed in at the tenant's OpenID Connect provider bound to the device key; session tokens carry the owner id, verified at the MCP gateway and the model proxy (agentIdentity.requireOwner, revokedOwnerAssertions)",
+      "path": "cli/owner-assertion.mjs",
+      "symbol": "export function ownerStatus"
     }
   }
 }

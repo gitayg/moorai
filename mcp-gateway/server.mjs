@@ -39,6 +39,7 @@ import { countCall } from "./usage.mjs";
 import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
 import { createRelistFetcher, relistHeaders, relistMeta } from "./relist.mjs";
 import { createUpstreamReply } from "./sampling.mjs";
+import { clientAnswersOf } from "../mcp-proxy/sampling-response.mjs";
 import { upstreamTarget, judgeUpstream, egressLookup, EGRESS_CODE } from "./egress.mjs";
 import { missingStandardHeader, createParamHeaders } from "./headers-2026.mjs";
 import { PRM_PREFIX, prmRoute, createDiscovery, getJson } from "./oauth-discovery.mjs";
@@ -371,12 +372,21 @@ export function createGatewayServer(cfg) {
           if (mm) { noteRefusal(ckey, route); return sendJson(res, 400, rpcError(Array.isArray(parsed) ? null : parsed.id, -32020, `Header mismatch: ${mm}`)); }
         }
         const blocked = new Map();
+        // A client answer to a sampling / elicitation request the gate refused: a response is replaced in the
+        // body sent upstream (answered), a retried request is refused to the client (refusedAs).
+        const answered = new Map(), refusedAs = new Map();
         // A fail-closed refusal is the gateway's own failure, not the client's: it does not count toward
         // the cool-down (./fail.mjs).
         let policyRefused = false;
         for (const m of msgs) {
           if (!m || typeof m !== "object") continue;
           if (m.result && Array.isArray(m.result.roots)) { try { guard.rememberRoots(m.result.roots); } catch { /* roots are a hint */ } }
+          const ans = clientAnswersOf(m);
+          if (ans) {
+            const ref = await guard.gateAnswer(m, ans);
+            if (ref && ref.toServer) { answered.set(m, ref.toServer); continue; }
+            if (ref) { refusedAs.set(m, ref.toClient); blocked.set(m, "refused"); continue; }
+          }
           if (m.method !== "tools/call" || !m.params || typeof m.params !== "object") continue;
           if (m.id != null) ctx.idTool.set(idKey(m.id), String(m.params.name || "mcp"));
           // C4 usage: per server and per tool name, blocked or not (mcp-gateway/usage.mjs). The tally
@@ -403,12 +413,13 @@ export function createGatewayServer(cfg) {
         }
         if (blocked.size) {
           if (policyRefused) noteRefusal(ckey, route);
-          if (!Array.isArray(parsed)) return sendJson(res, 200, blockedCall(parsed.id, blocked.get(parsed)));
+          if (!Array.isArray(parsed)) return sendJson(res, 200, refusedAs.get(parsed) || blockedCall(parsed.id, blocked.get(parsed)));
           // A batch (2025-03-26 only) is refused whole: forwarding part of it would answer some ids and
           // not others, and the gate has already said no to one of them.
-          const out = msgs.filter((m) => m && m.id != null).map((m) => blockedCall(m.id, blocked.get(m) || "another call in the same batch was blocked"));
+          const out = msgs.filter((m) => m && m.id != null).map((m) => refusedAs.get(m) || blockedCall(m.id, blocked.get(m) || "another call in the same batch was blocked"));
           return out.length ? sendJson(res, 200, out) : (res.writeHead(202), res.end());
         }
+        if (answered.size) body = Buffer.from(JSON.stringify(Array.isArray(parsed) ? parsed.map((m) => answered.get(m) || m) : answered.get(parsed)));
       }
     }
 

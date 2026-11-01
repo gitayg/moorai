@@ -864,8 +864,9 @@ engineer including tests and docs.
 
 ## 12. Agent session identity and the credential broker (built after agent v1.45.1 / console v0.102.0, unreleased)
 
-Written 2026-10-31 against agent v1.45.1 (`52e269a`) and console v0.102.0 (`51facf8`). Phase A below is built in the
-working tree and tested; phases B and C are proposals. This section does not replace §5-§7: it adds an identity the
+Written 2026-10-31 against agent v1.45.1 (`52e269a`) and console v0.102.0 (`51facf8`). Phase A below is built and
+tested; the owner sign-in part of phase B is built (§12.6, after agent v1.46.1 / console v0.103.0); the rest of phase B
+and phase C are proposals. This section does not replace §5-§7: it adds an identity the
 agent *carries* (a signed token) to the identities the console *derives* (the `agt-` registry, §6 as built in console
 v0.96.0) and the attested credentials of §7.
 
@@ -894,7 +895,10 @@ the broker can tie a request to. The phases:
 
 - **Phase A (built).** A per-session identity token, minted on the device, verified by the gateway and the model
   proxy, recorded on alerts, listed and revocable in the console. Not a credential for any upstream.
-- **Phase B (proposal).** Bind placeholder credentials to identities: a binding gains `allow: { agentNames?,
+- **Phase B, owner sign-in (built, §12.6).** A person signs in at the tenant's OpenID Connect provider from the
+  device; the console verifies the ID token and binds the person to the device key; session tokens carry the owner id
+  and the gateway and the model proxy verify and record it.
+- **Phase B, credentials (proposal).** Bind placeholder credentials to identities: a binding gains `allow: { agentNames?,
   sessionsFrom?: "registered" }`, so a swap happens only for a request whose identity verified, is not revoked, and
   matches; the console serves per-device bindings metadata (never the secret) and revocation removes the swap. Then
   mint downstream credentials per session through the IdP: OAuth 2.0 token exchange (RFC 8693) at the tenant's IdP
@@ -973,3 +977,68 @@ Cannot:
   2.1.227 or later per its env-var reference).
 - Revocation latency beyond one sample; the model proxy's latency (same 60 s runtime refresh, not measured).
 - Windows and Linux (tests ran on macOS).
+
+### 12.6 Phase B, owner sign-in, as built
+
+Built after agent v1.46.1 (`9808836`) and console v0.103.0 (`83673e9`). Specifications read 2026-10-31 from
+rfc-editor.org (RFC 6749, 7636, 8252, 8628) and openid.net (OpenID Connect Core 1.0, Discovery 1.0).
+
+**Console as the OAuth client.** One OpenID Connect provider per tenant (`server/owner-idp-config.js`: issuer, client
+id, scopes with `openid`, optional client secret, optional email domains, `bindingDays` 1-90, default 30). The secret
+is write-only and stored with the AES-256-GCM helper that protects the admin SSO secret and the policy signing keys;
+the console alone uses it, as HTTP Basic with the id and secret form-encoded (RFC 6749 §2.3.1). RFC 8628 §3.1 makes
+the device authorization request a client-authenticated one ("confidential clients ... authenticate in the same manner
+as when making requests to the token endpoint"), and RFC 8252 §8.5 says "Secrets that are statically included as part
+of an app distributed to multiple users should not be treated as confidential secrets", so the device is never given
+one: it relays, and the console makes every call to the provider. That also keeps the device code, the ID token and
+the access token off the device, where the agent's OS user could read them. Discovery: OpenID Connect Discovery §4.3,
+"The issuer value returned MUST be identical to the Issuer URL that was used as the prefix to
+/.well-known/openid-configuration"; every endpoint must be https (http only on a loopback address); no redirects.
+
+**Flows** (`server/owner-idp-flow.js`, agent `cli/owner-login.mjs`):
+- device authorization grant (RFC 8628): `start` posts `scope` (and the client's authentication) to the
+  `device_authorization_endpoint`; the device shows `verification_uri` and `user_code`; `poll` posts
+  `grant_type=urn:ietf:params:oauth:grant-type:device_code` no faster than `interval` ("If no value is provided,
+  clients MUST use 5 as the default"), adds 5 s on `slow_down`, ends on `access_denied`, `expired_token` and "any other
+  error code" (§3.5), and doubles the interval on a connection failure. Pending flows are kept in memory (200 per
+  tenant, 2000 in all, at most 15 minutes).
+- authorization code with PKCE and a loopback redirect: the device builds the request with
+  `code_challenge = BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))` (RFC 7636 §4.2; "If the client is capable of using
+  "S256", it MUST use "S256""), a `state` and a `nonce`, listens on `http://127.0.0.1:<port>/callback` (RFC 8252 §7.3),
+  checks `state`, and the console redeems the code with the verifier and checks the ID token's `nonce`.
+
+**ID token** (`server/owner-idp-token.js`), OpenID Connect Core §3.1.3.7: issuer "MUST exactly match" `iss`; `aud`
+must contain the client id and, when it has more than one value, `azp` must be the client id ("The ID Token MUST be
+rejected if ... it contains additional audiences not trusted by the Client"); "The current time MUST be before the
+time represented by the exp Claim" (60 s skew); `iat` within the last 10 minutes; `nonce` checked when one was sent.
+The signature is checked with a key from the provider's JWKS by `kid` (refetched once for an unknown `kid`) although
+the token came over TLS from the token endpoint; RS*, PS*, ES* and EdDSA only.
+
+**Binding** (`server/owner-bindings.js`): one row per (tenant, device key id): owner id `own-` + 16 hex of
+sha256(tenant | issuer | sub), the email and name (for administrators), a hash of `sub`, the key's pin status and the
+method. Device requests are signed with the device key over `moorai-owner-bind-v1|op|tenant|kid|ref|ts` (ref: the flow
+id, or sha256 of the code; ts within 5 minutes) and checked against the console's `agencyPub` pin for the device. The
+answer is an owner assertion `moo1.<claims>.<sig>`, `{ v, oid, aid, kid, iat, exp }`, signed with the tenant's policy
+key over `moorai-owner-v1|tenant|moo1.<claims>`. An unbind (administrator or the device's `logout`) or a new sign-in
+on the same key lists the old `aid` in the signed policy's `revokedOwnerAssertions` until it expires. Governance log:
+`ownerIdp.configure`, `ownerBinding.bind`, `ownerBinding.unbind`.
+
+**Agent** (`cli/owner-assertion.mjs`, `cli/owner-verify.mjs`): the assertion lives in `~/.moorai/agent-owner.json`;
+new session tokens carry its owner id as `own`; the gateway and the model proxy verify the assertion with the keys
+that verify the policy (`policyTrustKeys`: anchor, else pin), and record `agentSession.owner { id, status }`
+(`verified`, `mismatch`, `revoked`, `unverified`). `agentIdentity.requireOwner` under `require` refuses a request
+whose owner is not verified (401). The console records the claim and its status per session beside the owner it bound
+when the session registered.
+
+**Measured.** One live run (scratch script, real console, fake provider, real CLI, real gateway at its default 60 s
+refresh): device-code sign-in in 1.4 s; registration attached the owner; the gateway's `Agent owner: revoked` alert
+reached the console 51.2 s after the unbind; no client secret or device code in the console's logs or the CLI's
+output. Tests: agent `test/owner-identity.test.mjs`; console `test/owner-idp.test.js` (fake provider in
+`test/helpers/fake-oidc.js`).
+
+**Not done.** No SCIM or SSF/CAEP: a person who leaves stays bound until the binding expires or an administrator
+unbinds it. No per-tool or per-server authorization by person, no RFC 8693 token exchange, no placeholder credentials
+bound to an owner. The hook does not read the owner. Same-user caveat: every process of the device's OS user can read
+the device key and the assertion, so the owner attributes that user's sessions; it does not authenticate a process.
+Device-code phishing (RFC 8628 §5.4) is not mitigated beyond the CLI's warning. Not tried against a real provider
+(Entra ID, Okta, Google), on Windows or Linux, or with a console restart during a pending sign-in (the flow is lost).
