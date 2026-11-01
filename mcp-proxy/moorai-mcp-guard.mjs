@@ -36,7 +36,8 @@
 // parse-then-forward. Report-first here too: the default policy resolves #39 to "notify" and forwards.
 //
 // All other JSON-RPC traffic (initialize, notifications, server→client requests) passes through
-// verbatim.
+// verbatim, except a server's sampling/createMessage and elicitation/create, which ./sampling-scan.mjs
+// judges before the client sees them.
 //
 // Content-free by construction: only category / risk / one-way hash / server / tool / decision may leave
 // the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: by default, on ANY error (bad
@@ -71,9 +72,10 @@ import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, decideText, threatActionFor, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { serverRequestsOf, gateServerRequest } from "./sampling-scan.mjs";
 import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "./tool-drift.mjs";
@@ -86,6 +88,7 @@ import { spanHash } from "../cli/span-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
+import { judgeMcpPackage, mcpPackageAlert, resolveMcpPackagePolicy } from "../cli/mcp-package-policy.mjs";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { decideMcpToolClass, toolClassAlert, createAnnotationClasses } from "../cli/mcp-tool-class.mjs";
 import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
@@ -94,11 +97,16 @@ import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/m
 import { exitWhenDrained } from "../cli/exit-drain.mjs";
 import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
 import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp-fail.mjs";
-import { systemConfig, serverMode } from "../cli/server-mode.mjs";
+import { systemConfig, serverMode, settleNoApproverAsk } from "../cli/server-mode.mjs";
+import { oversharingAlertFields } from "../cli/mcp-outbound.mjs";
+import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
+import { createOutboundSecrets, secretEgressAlert } from "../cli/mcp-secret-egress.mjs";
+import { localWriteCheck } from "../cli/mcp-local-write.mjs";
 import { evaluateEgress } from "../cli/workload-profile.mjs";
 import { createTracer, traceFields } from "../model-proxy/trace-w3c.mjs";
 import { setMetaTrace } from "./trace-meta.mjs";
 import { planServerSpawn, serverSandboxNotes, serverSandboxAlerts, refusedChild } from "./sandbox-spawn.mjs";
+import { createReadGate, resourceBlockLine } from "./read-gate.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -121,6 +129,8 @@ function parseArgv(argv) {
 }
 
 const { label: SERVER, host: HOST, cmd: REAL_CMD, args: REAL_ARGS } = parseArgv(process.argv.slice(2));
+// MCP read checks (read-gate.mjs): per-server harvest budgets and the path scope check, for this server.
+const READS = createReadGate({ server: SERVER, decl: { command: REAL_CMD, args: REAL_ARGS } });
 
 // ---- config / identity / content-free reporting (same shape as the Claude Code hook) ----
 const CONFIG = loadConfig();
@@ -289,8 +299,8 @@ function auditCall(tool, decision, argsHash) {
 }
 function alertBlock(tool, gate, reason, argsHash, tc) {
   if (gate === "class") { alertToolClass(tool, tc, "deny"); return; }
-  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
-  post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
+  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "egress" ? "MCP: local secret egress" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
+  post({ threatId: gate === "server" ? 25 : 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
   // Coach-as-literacy: the blocked-call message Claude Desktop shows the user is a literacy touchpoint.
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
 }
@@ -301,7 +311,7 @@ function alertToolClass(tool, tc, decision) {
 }
 function alertFindings(tool, findings, blocked, argsHash, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...oversharingAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
@@ -331,6 +341,8 @@ function egressGate(msg, tool, argsHash) {
 // calls, and it refuses them at tools/call like every other gate here. Unenrolled: a coach note instead.
 // Network only when the policy opts in (registry lookup / SkillTriage feed); never a path or an env var.
 const REP_DECL = { command: REAL_CMD, args: REAL_ARGS };
+// #65 — the secrets this server's results carried, in memory (cli/mcp-secret-egress.mjs).
+const OUT_SECRETS = createOutboundSecrets();
 let REP = null;
 let REP_READY = null;
 function repPolicy() {
@@ -348,7 +360,7 @@ function reportReputation(rep) {
 function startReputation() {
   REP_READY = ensurePolicy()
     .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: ENGINE || undefined, catalogue: POLICY && POLICY.mcpCatalogue }))
-    .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
+    .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) { reportReputation(rep); reportPackage(packageJudgement(), null); } return rep; })
     .catch(() => null);
   return REP_READY;
 }
@@ -372,6 +384,32 @@ async function reputationGate(msg, tool, argsHash) {
   if (seenOnce(`rep-block:${REP.versionHash}:${REP.score}`)) reportReputation(REP);
   auditCall(tool, "deny", argsHash);
   writeBlock(msg.id, `this MCP server's reputation (${REP.score}/100, ${REP.band}) is below your organization's threshold`);
+  return true;
+}
+
+// ---- MCP server package policy (cli/mcp-package-policy.mjs) ----
+// The wrapped launch command, judged from the verified policy only: unpinned or unapproved version, a failed
+// critical check (the reputation's codes), a known-bad release. Reported with the reputation on first sight or
+// a version change. A block refuses at tools/call; an ask forwards and records (no interactive banner here).
+function packageJudgement() { try { return judgeMcpPackage(REP_DECL, REP, VERIFIED); } catch { return null; } }
+function reportPackage(j, decision) {
+  if (!j || (!j.held.length && !j.reportOnly.length)) return;
+  const alert = { ...mcpPackageAlert(j, { server: SERVER, tool: "desktop:mcp", decision: decision || (COACH && j.decision !== "allow" ? "coach" : j.decision), identityHash: contentHash }), ts: new Date().toISOString(), ...IDENTITY };
+  post(alert);
+  try { recordAction(applyCaptureTier({ ...alert }, {}, (POLICY && POLICY.captureTier) || "content-free")); } catch { /* ledger is best-effort */ }
+}
+// → true when the call was refused.
+async function packageGate(msg, tool, argsHash) {
+  // The reputation's codes matter only to an ask / block policy; report never waits for them.
+  if (!REP && REP_READY && resolveMcpPackagePolicy(VERIFIED).action !== "report") await withDeadline(REP_READY, 3000);
+  const j = packageJudgement();
+  if (!j || j.decision === "allow") return false;
+  const token = `pkg:${j.key}:${j.decision}:${j.held.join(",")}:${j.critical.join(",")}`;
+  if (COACH) { if (seenOnce(`${token}:coach`)) coachNote(`calls to MCP server ${SERVER}`, j.reason); return false; }
+  if (seenOnce(token)) reportPackage(j, j.decision);
+  if (j.decision !== "deny") return false;
+  auditCall(tool, "deny", argsHash);
+  writeBlock(msg.id, `this MCP server's package is held by your organization's policy (${j.held.join(", ")})`);
   return true;
 }
 
@@ -541,8 +579,23 @@ async function handleLine(rawLine) {
 
   if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
   if (msg && msg.method === "tools/list") rememberList(msg);
+  if (msg && msg.method === "resources/read" && msg.params && typeof msg.params === "object") return gateResourceRead(rawLine, msg);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
   return TRACE.run(callTrace(msg), () => gateCall(rawLine, msg));
+}
+
+// resources/read (client → server): counted toward the server's harvest budget, and a file:// URI judged against
+// its declared scope (read-gate.mjs). Forwarded unless policy blocks; fail open.
+async function gateResourceRead(rawLine, msg) {
+  try {
+    await ensurePolicy();
+    const uri = typeof msg.params.uri === "string" ? msg.params.uri : "";
+    const rg = READS.call({ policy: POLICY, method: "resources/read", tool: "resources/read", args: { uri }, clientRoots: ROOTS, id: msg.id });
+    for (const a of rg.alerts) post({ ...a, tool: "desktop:resources/read", ...(COACH && a.decision !== "allow" ? { decision: "coach" } : {}), ts: new Date().toISOString(), ...IDENTITY });
+    if (rg.decision === "deny" && COACH) coachNote("MCP resource read", rg.reason, []);
+    if (rg.decision === "deny" && !COACH && msg.id != null) { process.stdout.write(resourceBlockLine(msg.id, rg.reason)); return; }
+  } catch { /* governance, not a sandbox: forward */ }
+  forward(rawLine);
 }
 
 async function gateCall(rawLine, msg) {
@@ -595,6 +648,7 @@ async function gateCall(rawLine, msg) {
     }
 
     if (await reputationGate(msg, tool, argsHash)) { replied = true; return; }
+    if (await packageGate(msg, tool, argsHash)) { replied = true; return; }
 
     // Egress rules (cli/egress-rules.mjs, F23): every destination the arguments name, judged by the hook's
     // own function for mcp__<server>__<tool>, from the verified policy and the root-owned machine-wide
@@ -608,7 +662,18 @@ async function gateCall(rawLine, msg) {
       auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); replied = true; forward(traced(rawLine)); return;
     }
 
-    const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
+    const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args, localWrite: localWriteCheck({ policy: POLICY, label: SERVER, decl: REP_DECL }) });
+    // #65 — a local secret VALUE in the arguments: the check the hook and the HTTP gateway run. No one
+    // answers an ask here, so an unverified match is settled as the gateway settles it (deny by default).
+    const eg = g.gate === "server" || g.gate === "args" ? null : OUT_SECRETS.check({ args, policy: POLICY, admin: ADMIN, actionFor: threatActionFor });
+    let egBlock = eg ? eg.verdict === "deny" : false;
+    if (eg && eg.verdict === "ask") {
+      const s = settleNoApproverAsk(serverMode(), POLICY, { decision: "ask", reason: `${tool} — outbound content MoorAI could not check for a tracked secret`, tool });
+      if (s.alert) post({ ...s.alert, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), ...IDENTITY });
+      egBlock = s.decision === "deny";
+    }
+    if (egBlock && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; g.alternatives = []; }
+    if (eg) post({ ...secretEgressAlert(eg, egBlock && !COACH), tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), ...IDENTITY });
     // Files the arguments NAME — the same helper and the same checks as the hook's mcp__* branch
     // (cli/mcp-file-args.mjs). A relative path resolves against this process's cwd first — the real
     // server is spawned with no cwd option, so it inherits it and resolves the same way — then against
@@ -622,6 +687,13 @@ async function gateCall(rawLine, msg) {
     if (fsr && fsr.unevaluated && g.decision !== "deny") {
       const fm = failClosed();
       if (fm) { replied = true; alertFailClosed("mcp", "label", fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason("label")); return; }
+    }
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // closed refuses the call; open forwards it with a Medium alert, once per tool in this process.
+    if (g.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { replied = true; alertFailClosed("mcp", g.unevaluated.why, fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason(g.unevaluated.why)); return; }
+      if (seenOnce(`outbound-unevaluated|${tool}`)) post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server: SERVER, toolPrefix: "desktop" }), ts: new Date().toISOString(), ...IDENTITY });
     }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
@@ -638,6 +710,11 @@ async function gateCall(rawLine, msg) {
     // tool's annotations from this server's listings. Decides only when stricter than everything above.
     const tc = decideMcpToolClass(POLICY, { tool, server: SERVER, annotation: ANNOTATIONS.get(tool) });
     if (tc && RANK[tc.decision] > RANK[g.decision]) { g.decision = tc.decision; g.gate = "class"; g.reason = tc.reason; g.alternatives = []; g.toolClass = tc; }
+
+    // MCP read checks (read-gate.mjs): harvest budgets and the path scope check. Stricter only, by rank.
+    const rg = READS.call({ policy: POLICY, tool, args: msg.params.arguments, annotation: ANNOTATIONS.get(tool), clientRoots: ROOTS, id: msg.id });
+    if (RANK[rg.decision] > RANK[g.decision]) { g.decision = rg.decision; g.gate = rg.gate; g.reason = rg.reason; g.alternatives = []; }
+    for (const a of rg.alerts) post({ ...a, tool: `desktop:${tool}`, ...(COACH && a.decision !== "allow" ? { decision: "coach" } : {}), ts: new Date().toISOString(), ...IDENTITY });
 
     if (COACH && g.decision === "deny") {
       if (g.gate === "class") alertToolClass(tool, tc, "coach");
@@ -890,7 +967,7 @@ function onServerChunk(chunk) {
       // server wants; forward what we have and pass the remainder through raw. Unscanned, never stuck.
       emitted = true; listingUnjudged(); outPending = EMPTY;
       if (rest.indexOf(RELIST_NONCE) >= 0) { outRaw = "drop"; relistUnreadable(); }
-      else { outRaw = true; emitRaw(Buffer.from(rest)); }
+      else { outRaw = true; emitRaw(Buffer.from(rest)); if (READS.waiting()) countRead(RESPONSE_ID.exec(rest.subarray(0, 512).toString("utf8")), rest.length); }
     } else outPending = rest.length ? Buffer.from(rest) : EMPTY;
   } catch {
     listingUnjudged();
@@ -974,6 +1051,17 @@ function alertResult(toolName, findings, blocked) {
   }
 }
 
+// A response's size toward its server's harvest budget (read-gate.mjs). m[1]: the JSON text of the id. Never throws.
+// A line over the scan cap is never parsed: its id is read from its first 512 bytes, and a line streamed raw counts
+// as the bytes buffered before streaming began (at least CAPS.maxLineBytes).
+const RESPONSE_ID = /"id"\s*:\s*("[^"]{0,200}"|-?\d{1,20})/;
+function countRead(m, bytes) {
+  try {
+    if (!m) return;
+    for (const a of READS.result({ policy: POLICY, id: JSON.parse(m[1]), bytes })) post({ ...a, tool: `desktop:${a.readTool}`, readTool: undefined, ts: new Date().toISOString(), ...IDENTITY });
+  } catch { /* a count, never enforcement */ }
+}
+
 // ONE message from the child. Exactly one write happens, and the default is always the original bytes.
 async function gateResult(lineBuf) {
   let done = false;
@@ -983,20 +1071,40 @@ async function gateResult(lineBuf) {
     // that carries the guard's own re-list id is the answer to a request the client never sent: dropped.
     if (lineBuf.length > CAPS.maxLineBytes) {
       if (lineBuf.indexOf(RELIST_NONCE) >= 0) { done = true; relistUnreadable(); return; }
+      if (READS.waiting()) countRead(RESPONSE_ID.exec(lineBuf.subarray(0, 512).toString("utf8")), lineBuf.length);
       listingUnjudged(); return pass();
     }
     const s = lineBuf.toString("utf8");
     // Only a RESPONSE can carry either stage's payload. A "\u0072esult" key is the same key to every
     // JSON parser, so a line with any \u escape is parsed too rather than skipped. So is an answer to the
     // guard's own re-list (an error response has no "result") and a tools/list_changed notification.
-    if (!s.trim() || (s.indexOf("\"result\"") < 0 && s.indexOf("\\u") < 0 && s.indexOf(RELIST_NONCE) < 0 && s.indexOf("list_changed") < 0)) return pass();
+    if (!s.trim() || (s.indexOf("\"result\"") < 0 && s.indexOf("\\u") < 0 && s.indexOf(RELIST_NONCE) < 0 && s.indexOf("list_changed") < 0 && s.indexOf("sampling/createMessage") < 0 && s.indexOf("elicitation/create") < 0)) return pass();
     let msg;
     try { msg = JSON.parse(s); } catch { if (s.indexOf(RELIST_NONCE) >= 0) { done = true; relistUnreadable(); return; } listingUnjudged(); return pass(); }
     // The answer to the guard's own tools/list (tool-recheck.mjs): consumed here, never forwarded.
     if (ownRelistAnswer(msg)) { done = true; return; }
+    // A server -> client sampling / elicitation request (./sampling-scan.mjs): judged, then forwarded or refused.
+    const sreq = serverRequestsOf(msg);
+    if (sreq) {
+      if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+      const call = sreq.shape === "request" ? null : CALL_TOOL.get(String(msg.id)) || null;
+      const ref = TRACE.run(call && call.trace, () => gateServerRequest(msg, sreq, {
+        engine: ENGINE, policy: POLICY, coach: COACH, server: SERVER, toolPrefix: "desktop", label: call && call.tool, isToolCall: !!call, identity: IDENTITY, post, failClosed, coachNote,
+        record: (a) => recordAction(applyCaptureTier(a, {}, (POLICY && POLICY.captureTier) || "content-free"))
+      }));
+      if (ref) {
+        done = true;
+        if (ref.toServer) child.stdin.write(JSON.stringify(ref.toServer) + "\n");
+        if (call) takeCall(msg.id);
+        process.stdout.write(JSON.stringify(ref.toClient) + "\n");
+        return;
+      }
+      if (sreq.shape === "request") return pass();
+    }
     // The server says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
     if (msg && msg.method === "notifications/tools/list_changed") DRIFT.markStale();
     if (msg && msg.id != null) LIST_OPEN.delete(String(msg.id));
+    if (msg && msg.id != null && (msg.result || msg.error)) countRead([null, JSON.stringify(msg.id)], lineBuf.length);
 
     // The tool stage stays FORWARD-FIRST by default: a tools/list response is never altered, delayed
     // or reordered (test/mcp-tool-stage.test.mjs asserts byte-identity on the wire), so it is written
@@ -1025,6 +1133,7 @@ async function gateResult(lineBuf) {
 
     const result = resultOfResponse(msg);
     if (!result) return pass();
+    OUT_SECRETS.learn(result, POLICY); // #65: this result's secrets are matched in later calls' arguments
 
     // The verdict: null when the scan threw or missed the deadline (withDeadline), { unjudged } when it
     // could not run, null too for a result with no text (nothing to judge: forwarded in either mode).

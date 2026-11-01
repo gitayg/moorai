@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-28T11:12:28.761Z",
+  "generatedAt": "2026-10-31T14:03:01.841Z",
   "engine": {
     "detectors": 128,
-    "threats": 86,
+    "threats": 89,
     "corpusCases": 102
   },
   "corpus": {
@@ -20,7 +20,7 @@
         "detectors": 25
       },
       "LLM02": {
-        "threats": 22,
+        "threats": 24,
         "detectors": 45
       },
       "LLM03": {
@@ -36,7 +36,7 @@
         "detectors": 16
       },
       "LLM06": {
-        "threats": 18,
+        "threats": 19,
         "detectors": 10
       },
       "LLM07": {
@@ -61,69 +61,79 @@
     "edition": "2026",
     "source": "https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/",
     "covered": 1,
-    "partial": 6,
-    "uncovered": 3,
+    "partial": 9,
+    "uncovered": 0,
     "total": 10,
     "byItem": {
       "ASI01": {
         "threats": 9,
         "partialThreats": 7,
         "detectors": 33,
+        "mechanisms": 2,
         "status": "covered"
       },
       "ASI02": {
         "threats": 10,
         "partialThreats": 10,
         "detectors": 8,
+        "mechanisms": 2,
         "status": "partial"
       },
       "ASI03": {
         "threats": 4,
         "partialThreats": 4,
         "detectors": 6,
+        "mechanisms": 1,
         "status": "partial"
       },
       "ASI04": {
-        "threats": 3,
-        "partialThreats": 3,
-        "detectors": 11,
+        "threats": 4,
+        "partialThreats": 4,
+        "detectors": 13,
+        "mechanisms": 3,
         "status": "partial"
       },
       "ASI05": {
         "threats": 6,
         "partialThreats": 6,
         "detectors": 15,
+        "mechanisms": 0,
         "status": "partial"
       },
       "ASI06": {
         "threats": 4,
         "partialThreats": 4,
         "detectors": 7,
+        "mechanisms": 0,
         "status": "partial"
       },
       "ASI07": {
         "threats": 1,
         "partialThreats": 1,
         "detectors": 0,
-        "status": "uncovered"
+        "mechanisms": 1,
+        "status": "partial"
       },
       "ASI08": {
-        "threats": 0,
-        "partialThreats": 0,
+        "threats": 1,
+        "partialThreats": 1,
         "detectors": 0,
-        "status": "uncovered"
+        "mechanisms": 1,
+        "status": "partial"
       },
       "ASI09": {
         "threats": 1,
         "partialThreats": 1,
         "detectors": 1,
+        "mechanisms": 0,
         "status": "partial"
       },
       "ASI10": {
-        "threats": 2,
-        "partialThreats": 2,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 3,
+        "partialThreats": 3,
+        "detectors": 2,
+        "mechanisms": 3,
+        "status": "partial"
       }
     }
   },
@@ -131,71 +141,102 @@
     "edition": "2025, beta",
     "source": "https://github.com/OWASP/www-project-mcp-top-10",
     "covered": 1,
-    "partial": 5,
-    "uncovered": 4,
+    "partial": 8,
+    "uncovered": 1,
     "total": 10,
     "byItem": {
       "MCP01": {
         "threats": 3,
         "partialThreats": 3,
         "detectors": 28,
+        "mechanisms": 0,
         "status": "partial"
       },
       "MCP02": {
         "threats": 3,
         "partialThreats": 3,
         "detectors": 3,
+        "mechanisms": 1,
         "status": "partial"
       },
       "MCP03": {
         "threats": 2,
         "partialThreats": 2,
         "detectors": 11,
+        "mechanisms": 0,
         "status": "partial"
       },
       "MCP04": {
-        "threats": 0,
-        "partialThreats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 2,
+        "mechanisms": 1,
+        "status": "partial"
       },
       "MCP05": {
         "threats": 2,
         "partialThreats": 2,
         "detectors": 3,
+        "mechanisms": 0,
         "status": "partial"
       },
       "MCP06": {
         "threats": 8,
         "partialThreats": 6,
         "detectors": 24,
+        "mechanisms": 3,
         "status": "covered"
       },
       "MCP07": {
         "threats": 0,
         "partialThreats": 0,
         "detectors": 0,
+        "mechanisms": 0,
         "status": "uncovered"
       },
       "MCP08": {
         "threats": 1,
         "partialThreats": 1,
         "detectors": 2,
+        "mechanisms": 0,
         "status": "partial"
       },
       "MCP09": {
         "threats": 1,
         "partialThreats": 1,
         "detectors": 0,
-        "status": "uncovered"
+        "mechanisms": 1,
+        "status": "partial"
       },
       "MCP10": {
-        "threats": 0,
-        "partialThreats": 0,
+        "threats": 2,
+        "partialThreats": 2,
         "detectors": 0,
-        "status": "uncovered"
+        "mechanisms": 2,
+        "status": "partial"
       }
     }
+  },
+  "mechanismEvidence": {
+    "declared": 15,
+    "proven": [
+      "mcp-server-allow",
+      "subagent-delegation",
+      "subagent-envelope",
+      "entitlement-envelope",
+      "learned-drift",
+      "intent-alignment",
+      "oversight-weakening",
+      "circuit-breaker",
+      "trifecta-gate",
+      "file-metadata",
+      "sampling-context",
+      "mcp-oversharing",
+      "cascade-limits",
+      "mcp-package-policy",
+      "package-known-bad"
+    ],
+    "unproven": []
   },
   "mitreAttackV20": {
     "edition": "20.0",
@@ -257,8 +298,8 @@
       },
       "T1195.001": {
         "lane": "agent",
-        "threats": 5,
-        "detectors": 5,
+        "threats": 6,
+        "detectors": 7,
         "status": "partial",
         "partialBound": "gap"
       },
@@ -699,5 +740,5 @@
       }
     }
   },
-  "latency": {"measured":true,"method":"nearest-rank","machine":{"cpu":"Apple M5 Max","cores":18,"os":"darwin 27.0.0 arm64","node":"v22.23.4"},"rows":[{"id":"scan-prompt","label":"In process: `engine.scan` at `prompt`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.234,"p95Ms":5.197,"p99Ms":null,"maxMs":22.201},{"id":"scan-file","label":"In process: `engine.scan` at `file`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.528,"p95Ms":5.567,"p99Ms":null,"maxMs":7.368},{"id":"scan-output","label":"In process: `engine.scan` at `output`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":0.566,"p95Ms":1.057,"p99Ms":null,"maxMs":1.701},{"id":"sdk-decide","label":"In process: Agent SDK tool-call decision","sample":"one `PreToolUse` from the ten-call mix","warmup":200,"n":2000,"p50Ms":2.279,"p95Ms":7.823,"p99Ms":8.113,"maxMs":9.419},{"id":"hook-e2e","label":"Process: hook end-to-end (`PreToolUse`)","sample":"spawn → stdin JSON → exit","warmup":5,"n":200,"p50Ms":206.848,"p95Ms":243.54,"p99Ms":null,"maxMs":266.868},{"id":"node-floor","label":"Process: Node startup floor (`node -e \"\"`)","sample":"spawn → exit, interleaved with the hook","warmup":5,"n":200,"p50Ms":42.356,"p95Ms":44.848,"p99Ms":null,"maxMs":50.553}],"hookDecisions":{"allow":140,"advise":60},"sdkDecisions":{"allow":1400,"deny":600}}
+  "latency": {"measured":true,"method":"nearest-rank","machine":{"cpu":"Apple M5 Max","cores":18,"os":"darwin 27.0.0 arm64","node":"v22.23.4"},"rows":[{"id":"scan-prompt","label":"In process: `engine.scan` at `prompt`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.234,"p95Ms":5.275,"p99Ms":null,"maxMs":23.246},{"id":"scan-file","label":"In process: `engine.scan` at `file`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.551,"p95Ms":5.613,"p99Ms":null,"maxMs":7.148},{"id":"scan-output","label":"In process: `engine.scan` at `output`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":0.565,"p95Ms":1.044,"p99Ms":null,"maxMs":1.912},{"id":"sdk-decide","label":"In process: Agent SDK tool-call decision","sample":"one `PreToolUse` from the ten-call mix","warmup":200,"n":2000,"p50Ms":2.257,"p95Ms":7.831,"p99Ms":8.423,"maxMs":12.251},{"id":"hook-e2e","label":"Process: hook end-to-end (`PreToolUse`)","sample":"spawn → stdin JSON → exit","warmup":5,"n":200,"p50Ms":172.189,"p95Ms":206.542,"p99Ms":null,"maxMs":231.278},{"id":"node-floor","label":"Process: Node startup floor (`node -e \"\"`)","sample":"spawn → exit, interleaved with the hook","warmup":5,"n":200,"p50Ms":42.523,"p95Ms":50.618,"p99Ms":null,"maxMs":57.843},{"id":"hook-http","label":"Process: hook over HTTP (`moorai-hookd`, `PreToolUse`)","sample":"POST → answer, warm worker, interleaved with the hook","warmup":5,"n":200,"p50Ms":39.144,"p95Ms":50.037,"p99Ms":null,"maxMs":56.138}],"hookDecisions":{"allow":140,"advise":60},"sdkDecisions":{"allow":1400,"deny":600}}
 }

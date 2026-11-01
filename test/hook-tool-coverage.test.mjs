@@ -99,11 +99,14 @@ function hookConstant(name) {
   return parsed;
 }
 
+// Claude Code's own rule (2.1.295 binary): a matcher of only letters, digits, "_" and "|" is a list of exact tool
+// names split on "|"; anything else is a regular expression. So "Read" does not reach "ReadMcpResourceTool".
+const matcherHits = (m, t) => (/^[a-zA-Z0-9_|]+$/.test(m) ? m.split("|").includes(t) : new RegExp(m).test(t));
 test("Layer A: every tool main() dispatches on is also a registered matcher (no dispatch without reach)", () => {
   const matchers = hookConstant("PRETOOL_MATCHERS");
   const dispatched = hookConstant("DISPATCHED_TOOLS");
   for (const t of dispatched) {
-    assert.ok(matchers.some((m) => new RegExp(m).test(t)), `main() dispatches "${t}" but no installed matcher reaches it`);
+    assert.ok(matchers.some((m) => matcherHits(m, t)), `main() dispatches "${t}" but no installed matcher reaches it`);
   }
 });
 

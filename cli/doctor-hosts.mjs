@@ -12,6 +12,7 @@ import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-ho
 import { hooksFile as antigravityFile, eventView as antigravityView } from "./agent-hooks/antigravity.mjs";
 import { hookFile as kiroFile, eventView as kiroView } from "./agent-hooks/kiro.mjs";
 import { hooksDir as clineDir, readHooks as clineHooks } from "./agent-hooks/cline.mjs";
+import { httpUrls } from "./hook-transport.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -231,6 +232,9 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   const missingScripts = scripts.filter((s) => !existsSync(s));
   const missingExes = (data ? hookExes(data, host.ours) : []).filter((x) => isAbsolute(x) && !existsSync(x));
   const details = { file: where, events: have, expected: exp.surface, scripts: scripts.map(pathOf) };
+  // The http transport (moorai-hookd) names no script: the daemon runs this package's hook (cli/doctor-hookd.mjs).
+  const urls = host.id === "claude-code" && data ? httpUrls(data, host.ours) : [];
+  if (urls.length) Object.assign(details, { transport: "http", urls });
   // Both: the hook's --plugin copy stands down for each event a live settings.json install covers
   // (settingsCovers in moorai-hook.mjs), so the settings copy is the one that runs where it covers.
   const both = inSettings && plug && plug.installPath ? `both installed; the plugin stands down where the settings copy covers an event — keep one (${plug.id} and ${where})` : "";
@@ -242,7 +246,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   if (d.extra.length) problems.push(`unexpected event(s) ${d.extra.join(", ")}`);
   if (missingScripts.length) problems.push(`hook file missing: ${missingScripts.map(pathOf).join(", ")}`);
   if (missingExes.length) problems.push(`the node binary the hook command names is missing: ${missingExes.map(pathOf).join(", ")}`);
-  if (!scripts.length) problems.push("no hook script path found in MoorAI's entries");
+  if (!scripts.length && !urls.length) problems.push("no hook script path found in MoorAI's entries");
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);
   if (host.id === "gemini" && data && data.hooksConfig && data.hooksConfig.enabled === false) problems.push("hooksConfig.enabled is false");

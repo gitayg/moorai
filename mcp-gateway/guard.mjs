@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { serverRequestsOf, gateServerRequest } from "../mcp-proxy/sampling-scan.mjs";
 import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
@@ -48,6 +49,7 @@ import { spanHash } from "../cli/span-hash.mjs";
 import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
+import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
 import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -235,6 +237,13 @@ export function createGuard(route) {
       const fm = failClosed();
       if (fm) { alertFailClosed("mcp", "label", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("label"), failClosed: true }; }
     }
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // closed refuses the call; open forwards it with a Medium alert, once per tool in this process.
+    if (!early && g.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", g.unevaluated.why, fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason(g.unevaluated.why), failClosed: true }; }
+      if (seenOnce(`outbound-unevaluated|${SERVER}|${tool}`)) post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server: SERVER, toolPrefix: "gateway" }), ts: new Date().toISOString(), ...IDENTITY });
+    }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
     // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
@@ -405,8 +414,21 @@ export function createGuard(route) {
   // `paged`: the request asked for a later page, so an absent tool is not a removed one.
   // `tightenOnly`: a listing that answers no outstanding tools/list (server.mjs): judged, and filtered,
   // but it can only quarantine a tool, never clear one (tool-drift.mjs evaluateListing).
-  async function gateResult(msg, toolName, { paged = false, tightenOnly = false } = {}) {
+  async function gateResult(msg, toolName, { paged = false, tightenOnly = false, replyUpstream = null, methodOf = null } = {}) {
     try {
+      // A server -> client sampling / elicitation request (../mcp-proxy/sampling-scan.mjs): judged, then
+      // forwarded or refused (the server gets a JSON-RPC error upstream, the client a notice in its place).
+      const sreq = serverRequestsOf(msg);
+      if (sreq) {
+        if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+        const isToolCall = sreq.shape !== "request" && !!methodOf && methodOf(msg.id) === "tools/call";
+        const ref = gateServerRequest(msg, sreq, {
+          engine: state.ENGINE, policy: state.POLICY, coach: state.COACH, server: SERVER, toolPrefix: "gateway", label: isToolCall ? toolName : null, isToolCall,
+          identity: IDENTITY, post, record: recordLedger, failClosed, coachNote
+        });
+        if (ref) { if (ref.toServer && replyUpstream) replyUpstream(ref.toServer); return ref.toClient; }
+        if (sreq.shape === "request") return null;
+      }
       // The upstream says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
       if (msg && msg.method === "notifications/tools/list_changed") { DRIFT.markStale(); return null; }
       const r = msg && msg.result;

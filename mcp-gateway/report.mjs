@@ -20,6 +20,7 @@ import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
 import { spanHash } from "../cli/span-hash.mjs";
 import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
+import { oversharingAlertFields } from "../cli/mcp-outbound.mjs";
 import { RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
 import { toolClassAlert } from "../cli/mcp-tool-class.mjs";
 import { emitOtel } from "../cli/otel.mjs";
@@ -51,16 +52,23 @@ const TRACE = new AsyncLocalStorage();
 // Runs fn with the request's span (createTracer's result) as the trace every post() under it reads.
 export function withTrace(trace, fn) { return TRACE.run(trace, fn); }
 
+// The request's agent session identity (./identity.mjs): { id?, status, agentName? }, set once the header is
+// judged; every console alert raised under the request after that carries it as `agentSession`.
+const AGENT_SESSION = new AsyncLocalStorage();
+export function withAgentSession(fn) { return AGENT_SESSION.run({ record: null }, fn); }
+export function setAgentSession(record) { const h = AGENT_SESSION.getStore(); if (h) h.record = record; }
+
 export function post(raw) {
   const alert = { ...traceFields(TRACE.getStore()), ...raw };
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
   if (!isEnrolled(CONFIG)) return;
   const session = SESSION.getStore();
+  const as = AGENT_SESSION.getStore();
   try {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) },
-      body: JSON.stringify({ ...alert, ...(session && alert.session === undefined ? { session } : {}), ...(WORKLOAD ? { workload: WORKLOAD } : {}) }),
+      body: JSON.stringify({ ...alert, ...(session && alert.session === undefined ? { session } : {}), ...(as && as.record && alert.agentSession === undefined ? { agentSession: as.record } : {}), ...(WORKLOAD ? { workload: WORKLOAD } : {}) }),
       signal: AbortSignal.timeout(1500)
     }).catch(() => {});
   } catch { /* never let a network error touch the request path */ }
@@ -100,13 +108,13 @@ export function auditCall(server, tool, decision, argsHash) {
 
 export function alertBlock(server, tool, gate, argsHash) {
   const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "egress" ? "MCP: local secret egress" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
-  post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY });
+  post({ threatId: gate === "server" ? 25 : 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY });
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
 }
 
 export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...oversharingAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
     }

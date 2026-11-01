@@ -181,17 +181,22 @@
   "entries": [
     {
       "id": "I-1",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "MoorAI labels what it observes (a keyed actor hash per device and user, a keyed session hash) but issues no identity to an agent instance"
+      "evidence": [
+        "agent-session-identity"
+      ],
+      "limit": "every agent run started with moorai-identity run gets a random asi- session id, signed into its tokens and registered with the console; only agents started through moorai-identity get one, and any process of the same OS user can mint a token for any id"
     },
     {
       "id": "I-2",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "agent identities are not bound to credentials"
+      "evidence": [
+        "agent-session-identity",
+        "gateway-identity"
+      ],
+      "limit": "the session identity is bound to the device's ed25519 key (another key is refused under require) and registrations are checked against the key the console pinned; the key is user-readable and the identity is not bound to upstream credentials"
     },
     {
       "id": "I-3",
@@ -240,9 +245,11 @@
       "threats": [],
       "evidence": [
         "action-audit",
-        "provenance"
+        "provenance",
+        "gateway-identity",
+        "model-proxy-identity"
       ],
-      "limit": "each record carries a keyed actor hash and, for known agent sessions, a keyed session hash; there is no agent identity to tie it to"
+      "limit": "each record carries a keyed actor hash and, for known agent sessions, a keyed session hash; MCP gateway and model proxy alerts also carry the verified agent session, which the console maps to its agt- identity and owner; hook alerts do not carry it"
     },
     {
       "id": "B-3",
@@ -426,17 +433,24 @@
     },
     {
       "id": "R-2",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "no manual termination control"
+      "evidence": [
+        "operator-stop",
+        "kill"
+      ],
+      "limit": "an administrator's stop in the console denies every further call of an agent session or of every agent on a device and SIGTERMs the agent process (macOS, Linux); it applies on the device's first hook call after its 60-second policy cache, not within a second, and an idle agent is stopped at its next call"
     },
     {
       "id": "R-3",
-      "status": "not-covered",
+      "status": "partial",
       "threats": [],
-      "evidence": [],
-      "reason": "agent sessions cannot be invalidated"
+      "evidence": [
+        "operator-stop",
+        "gateway-identity",
+        "model-proxy-identity"
+      ],
+      "limit": "an administrator's stop invalidates one Claude Code hook session or every session on a device, and a revoked agent session identity is refused by the MCP gateway and by the model proxy in enforce mode on the next policy refresh; there is no single tenant-wide revocation, and the egress proxy reads neither"
     },
     {
       "id": "R-4",
@@ -495,13 +509,6 @@
         "component": "human-approval"
       },
       "reason": "approval gates a class of action, not its magnitude"
-    },
-    {
-      "id": "R-2",
-      "credit": {
-        "component": "kill"
-      },
-      "reason": "the kill sentinel fires automatically on a kill verdict; there is no manual switch"
     }
   ]
 }

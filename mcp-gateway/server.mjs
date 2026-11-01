@@ -20,6 +20,7 @@
 // the session's trace itself. The body, `_meta` included, is forwarded as the client sent it.
 import http from "node:http";
 import https from "node:https";
+import dns from "node:dns";
 import { pipeline } from "node:stream";
 import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -37,12 +38,17 @@ import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
 import { createRelistFetcher, relistHeaders, relistMeta } from "./relist.mjs";
+import { createUpstreamReply } from "./sampling.mjs";
 import { upstreamTarget, judgeUpstream, egressLookup, EGRESS_CODE } from "./egress.mjs";
 import { missingStandardHeader, createParamHeaders } from "./headers-2026.mjs";
 import { PRM_PREFIX, prmRoute, createDiscovery, getJson } from "./oauth-discovery.mjs";
+import { createOAuthGate } from "./oauth-gate.mjs";
+import { upstreamIsLoopback, asUrlOk, asLookup, AS_REFUSED } from "./oauth-as-check.mjs";
 import { state as policyState, ensurePolicy } from "./policy.mjs";
 import { systemConfig as gatewaySystemConfig } from "./profile.mjs";
 import { alertProfile, seenOnce, SERVER_MODE as GW_SERVER_MODE } from "./report.mjs";
+import { withAgentSession } from "./report.mjs";
+import { gateIdentity } from "./identity.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
 // Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
@@ -188,14 +194,14 @@ function upstreamUrl(route, reqUrl) {
 
 // → { block: null | reason, lookup } for one request to the route's upstream (./egress.mjs). Alerts are
 // posted once per distinct alert per process, with the route's server label and tool "upstream".
-async function upstreamEgress(route, target, method) {
+async function upstreamEgress(route, target, method, lookup) {
   try { await ensurePolicy(); } catch { /* no policy: no rules */ }
   const st = { policy: policyState.POLICY, system: gatewaySystemConfig(), serviceId: GW_SERVER_MODE.active ? GW_SERVER_MODE.serviceId || "" : "", coach: policyState.COACH };
   const t = upstreamTarget(target, method);
   const post = (a) => { if (seenOnce(`egress-upstream:${route.server}:${a.contentHash}:${a.decision}`)) alertProfile(route.server, "upstream", a); };
   const j = judgeUpstream(t, st);
   for (const a of j.alerts) post(a);
-  return { block: j.block, lookup: egressLookup(t, st, post) };
+  return { block: j.block, lookup: egressLookup(t, st, post, lookup) };
 }
 
 function readBody(req, limit) {
@@ -236,11 +242,21 @@ export function createGatewayServer(cfg) {
   }
 
   const tracer = createTracer({ tenantKey: CONFIG.installToken, agentName: IDENTITY.agentName });
-  // The upstream's protected resource metadata is read with the route's egress checks (./egress.mjs).
-  const discovery = createDiscovery({ fetchJson: async (url, { route }) => {
-    const eg = await upstreamEgress(route, new URL(url), "GET");
-    return eg.block ? null : getJson(url, { lookup: eg.lookup });
-  } });
+  // The upstream's protected resource metadata is read with the route's egress checks (./egress.mjs); the
+  // authorization-server metadata it names also with the address checks of ./oauth-as-check.mjs.
+  const discovery = createDiscovery({ fetchJson: async (url, { route, authServer = false }) => {
+    const lo = authServer && upstreamIsLoopback(route.url);
+    if (authServer && !asUrlOk(url, lo)) return AS_REFUSED;
+    // The address check runs before the egress rules see the addresses, so an egress block cannot hide a refusal.
+    let refused = false;
+    const eg = await upstreamEgress(route, new URL(url), "GET", authServer ? asLookup(dns.lookup, lo, () => { refused = true; }) : undefined);
+    if (eg.block) return null;
+    if (!authServer) return getJson(url, { lookup: eg.lookup });
+    const doc = await getJson(url, { lookup: eg.lookup, agent: false });
+    return refused ? AS_REFUSED : doc;
+  }, checkDoc: (...a) => oauth.discoveryCheck(...a), onChallenge: (...a) => oauth.challenge(...a) });
+  // Bearer-token audience, issuer, scope and reuse checks, and authorization-server checks (./oauth-gate.mjs).
+  const oauth = createOAuthGate({ discovery });
 
   async function handle(req, res, trace) {
     // DNS rebinding: a loopback-only gateway answers only to loopback Host names and loopback / listed
@@ -262,6 +278,8 @@ export function createGatewayServer(cfg) {
     const entry = routes.get(path);
     if (!entry) return sendJson(res, 404, rpcError(null, -32601, "No MCP route at this path"));
     const { route, guard, pending } = entry;
+    const idg = await gateIdentity(req, route.server);
+    if (idg.refuse) return sendJson(res, idg.refuse.status, rpcError(null, -32600, idg.refuse.message));
     // 2026-07-28 authorization: "Access tokens MUST NOT be included in the URI query string". Refused before
     // the body is read; reported once per route, content-free.
     if (new URL(req.url, "http://x").searchParams.has("access_token")) {
@@ -280,6 +298,8 @@ export function createGatewayServer(cfg) {
       if (c.error) return sendJson(res, c.error.status, rpcError(null, -32600, `MoorAI MCP gateway: ${c.error.message}`));
       swaps = c.swaps;
     }
+    const oa = await oauth.request(req, route);
+    if (oa) return sendJson(res, oa.status, rpcError(null, -32600, `MoorAI MCP gateway: ${oa.message}`), oa.headers);
     pending.sweep(); // an entry past its TTL clears the verdicts before any call on the route is gated
 
     let body;
@@ -295,6 +315,7 @@ export function createGatewayServer(cfg) {
     // A blocked upstream is refused here, before the gate, whose block-mode re-list would reach it.
     const eg = await upstreamEgress(route, upstreamUrl(route, req.url), req.method);
     if (eg.block) return refuseEgress(res, body, eg.block);
+    { const t = upstreamUrl(route, req.url); ctx.replyUpstream = createUpstreamReply({ target: t, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[t.protocol], lookup: eg.lookup }); }
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
       const validating = cfg.schemaValidation !== "off";
@@ -427,7 +448,7 @@ export function createGatewayServer(cfg) {
   // Mcp-Session-Id (report.mjs withSession); a request without one carries none. And this hop's span.
   const server = http.createServer((req, res) => {
     const trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate });
-    withSession(req.headers["mcp-session-id"], () => withTrace(trace, () => handle(req, res, trace))).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
+    withSession(req.headers["mcp-session-id"], () => withTrace(trace, () => withAgentSession(() => handle(req, res, trace)))).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
   });
   server.guards = [...routes.values()].map((e) => e.guard);
   return server;
@@ -574,7 +595,7 @@ async function judge(x, m, path, claims, dispatchable) {
   const rep = checkServerMessage(m, x, path);
   const c = claim(x, m, dispatchable);
   if (c) claims.push([m, c]);
-  return rep || await x.guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c });
+  return rep || await x.guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c, replyUpstream: x.replyUpstream, methodOf: x.methodOf });
 }
 
 // One server → client message (C5 schema stage): report an invalid one; in enforce mode, an invalid
@@ -721,7 +742,7 @@ function onSse(ur, res, x) {
         learnTools(x, m);
         const c = claim(x, m, dispatchable);
         if (c) claims.push([m, c]);
-        try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c }); } catch { listUnjudged(x); return failClosedEvent(x, m); }
+        try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c, replyUpstream: x.replyUpstream, methodOf: x.methodOf }); } catch { listUnjudged(x); return failClosedEvent(x, m); }
       };
       if (ev.data != null) {
         const isMessage = ev.type == null || ev.type === "" || ev.type === "message";

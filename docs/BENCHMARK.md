@@ -1,14 +1,14 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-28T11:12:28.761Z
+> Generated: 2026-10-31T14:03:01.841Z
 
 - **Detectors:** 128
-- **Threats:** 86
+- **Threats:** 89
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
-- **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
-- **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
+- **OWASP Top 10 for Agentic Applications:** 1/10 covered, 9 partial, 0 uncovered
+- **OWASP MCP Top 10:** 1/10 covered, 8 partial, 1 uncovered
 - **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 56 partial (9 bounded by design, 47 open gap), 13 uncovered (agent lane: 2/58 covered, 54 partial (8 bounded by design, 46 open gap), 2 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
@@ -16,11 +16,11 @@
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 25 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 22 | 45 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 24 | 45 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
-| LLM06 | Excessive Agency | 18 | 10 | ✅ covered |
+| LLM06 | Excessive Agency | 19 | 10 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
 | LLM08 | Vector & Embedding Weaknesses | 3 | 13 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
@@ -28,39 +28,43 @@
 
 ## OWASP Top 10 for Agentic Applications (2026) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
-| ASI01 | Agent Goal Hijack | 9 | 7 | 33 | ✅ covered |
-| ASI02 | Tool Misuse and Exploitation | 10 | 10 | 8 | ◐ partial |
-| ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
-| ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
-| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | ◐ partial |
-| ASI06 | Memory & Context Poisoning | 4 | 4 | 7 | ◐ partial |
-| ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
-| ASI08 | Cascading Failures | 0 | 0 | 0 | — |
-| ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
-| ASI10 | Rogue Agents | 2 | 2 | 0 | — |
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
+| ASI01 | Agent Goal Hijack | 9 | 7 | 33 | 2 | ✅ covered |
+| ASI02 | Tool Misuse and Exploitation | 10 | 10 | 8 | 2 | ◐ partial |
+| ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | 1 | ◐ partial |
+| ASI04 | Agentic Supply Chain Vulnerabilities | 4 | 4 | 13 | 3 | ◐ partial |
+| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | 0 | ◐ partial |
+| ASI06 | Memory & Context Poisoning | 4 | 4 | 7 | 0 | ◐ partial |
+| ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | 1 | ◐ partial |
+| ASI08 | Cascading Failures | 1 | 1 | 0 | 1 | ◐ partial |
+| ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | 0 | ◐ partial |
+| ASI10 | Rogue Agents | 3 | 3 | 2 | 3 | ◐ partial |
 
 ## OWASP MCP Top 10 (2025, beta) coverage
 
-| Item | Name | Threats | Partial | Detectors | Status |
-|------|------|--------:|--------:|----------:|--------|
-| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 28 | ◐ partial |
-| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | ◐ partial |
-| MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
-| MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
-| MCP05 | Command Injection & Execution | 2 | 2 | 3 | ◐ partial |
-| MCP06 | Intent Flow Subversion | 8 | 6 | 24 | ✅ covered |
-| MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | — |
-| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | ◐ partial |
-| MCP09 | Shadow MCP Servers | 1 | 1 | 0 | — |
-| MCP10 | Context Injection & Over-Sharing | 0 | 0 | 0 | — |
+| Item | Name | Threats | Partial | Detectors | Mechanisms | Status |
+|------|------|--------:|--------:|----------:|-----------:|--------|
+| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 28 | 0 | ◐ partial |
+| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | 1 | ◐ partial |
+| MCP03 | Tool Poisoning | 2 | 2 | 11 | 0 | ◐ partial |
+| MCP04 | Software Supply Chain Attacks & Dependency Tampering | 1 | 1 | 2 | 1 | ◐ partial |
+| MCP05 | Command Injection & Execution | 2 | 2 | 3 | 0 | ◐ partial |
+| MCP06 | Intent Flow Subversion | 8 | 6 | 24 | 3 | ✅ covered |
+| MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | 0 | — |
+| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | 0 | ◐ partial |
+| MCP09 | Shadow MCP Servers | 1 | 1 | 0 | 1 | ◐ partial |
+| MCP10 | Context Injection & Over-Sharing | 2 | 2 | 0 | 2 | ◐ partial |
 
 For the two agentic lists, **Threats** counts the rules that credit the item (`owaspAgentic` / `owaspMcp`
-in `data/threats.json`) and **Partial** how many of those credits are bounded. An item is *covered* when a
-rule crediting it in full has an on-device detector, *partial* when only bounded credits do, and *—*
-otherwise. Rules whose mechanism is not a detector in `data/detectors.js` (drift, delegation, session
-risk, the MCP allow-list) are counted under Threats but add no detectors. Sources:
+in `data/threats.json`) and **Partial** how many of those credits are bounded. A credit is backed when its
+rule has an on-device detector in `data/detectors.js`, or an enforcing mechanism declared in
+`data/mechanism-evidence.json` (the MCP server allow-list, the entitlement envelope, the delegation, oversight,
+circuit-breaker and trifecta checks, the MCP sampling and over-sharing checks, cascade limits, and the MCP
+package policy and known-compromised package list) whose source holds the named symbol and whose named tests exist in the
+unit suite with those exact titles; **Mechanisms** counts those. A declaration backs only a credit the rule
+already carries, at its level. An item is *covered* when a full credit is backed, *partial* when only bounded
+credits are, and *—* otherwise. 15 of 15 declared mechanisms are proven. Sources:
 [OWASP Top 10 for Agentic Applications](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), [OWASP MCP Top 10](https://github.com/OWASP/www-project-mcp-top-10).
 
 ## MITRE ATT&CK v20.0 coverage (AI-agent scope)
@@ -73,7 +77,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1685.007 | Impair Autonomous Defenses | agent | 1 | 8 | ◐ partial (open gap) |
 | T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial (by design) |
 | T1027.018 | Invisible Unicode | agent | 1 | 8 | ◐ partial (open gap) |
-| T1195.001 | Compromise Software Dependencies and Development Tools | agent | 5 | 5 | ◐ partial (open gap) |
+| T1195.001 | Compromise Software Dependencies and Development Tools | agent | 6 | 7 | ◐ partial (open gap) |
 | T1059.001 | PowerShell | agent | 1 | 1 | ◐ partial (by design) |
 | T1059.004 | Unix Shell | agent | 1 | 1 | ◐ partial (by design) |
 | T1059.006 | Python | agent | 1 | 1 | ◐ partial (by design) |
@@ -161,12 +165,13 @@ categories and threat ids, never prompt content.
 
 | Path | One sample | n | Warm-up | p50 | p95 | p99 | max |
 |------|------------|--:|--------:|----:|----:|----:|----:|
-| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.20 ms | — | 22.2 ms |
-| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.53 ms | 5.57 ms | — | 7.37 ms |
-| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.57 ms | 1.06 ms | — | 1.70 ms |
-| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.28 ms | 7.82 ms | 8.11 ms | 9.42 ms |
-| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 206.8 ms | 243.5 ms | — | 266.9 ms |
-| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.4 ms | 44.8 ms | — | 50.6 ms |
+| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.28 ms | — | 23.2 ms |
+| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.55 ms | 5.61 ms | — | 7.15 ms |
+| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.56 ms | 1.04 ms | — | 1.91 ms |
+| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.26 ms | 7.83 ms | 8.42 ms | 12.3 ms |
+| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 172.2 ms | 206.5 ms | — | 231.3 ms |
+| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.5 ms | 50.6 ms | — | 57.8 ms |
+| Process: hook over HTTP (`moorai-hookd`, `PreToolUse`) | POST → answer, warm worker, interleaved with the hook | 200 | 5 | 39.1 ms | 50.0 ms | — | 56.1 ms |
 
 The cost a Claude Code user pays per tool call is the **hook end-to-end** row: one `node
 cli/moorai-hook.mjs` process spawned per `PreToolUse`, timed from spawn to exit, in a throwaway home
@@ -176,6 +181,10 @@ module loading and decision. The **in-process** rows are what the Agent SDK and 
 call in a long-lived process: `engine.scan` per stage over every text in
 `test/redteam/benign-corpus-v2.json`, and `createMoorAI().toolCall` (the decision code the parity test
 holds to the hook's verdicts) over a fixed mix of ten `PreToolUse` calls, six benign and four attack-shaped.
+The **hook over HTTP** row is the same event POSTed to `moorai-hookd` (Claude Code's `http` hook
+transport), in the same loop as the hook, timed from request to answer over a kept-alive connection; its
+decision is checked against the hook's for every call. Its workers have loaded the hook's modules before the
+request, so the row is what remains: the hook's own module, its decision and its exit.
 All rows run sequentially, one call at a time; machine load is not controlled.
 
 Percentiles are nearest-rank over the raw per-call timings, never interpolated and never derived from a

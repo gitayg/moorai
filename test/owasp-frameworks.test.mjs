@@ -134,6 +134,7 @@ const AGENTIC = [
   [55, "ASI03", "local credential files and keychain only", "cred-file-access matches the agent reading the authentication material it runs with"],
   [66, "ASI03", "the parent's entitlement envelope applied to a delegated sub-agent", "the hook applies the parent's envelope to an Agent/Task delegation"],
   [25, "ASI04", "approved-connector allow-list only", "policy.mcpAllow refuses a call to a third-party server off the list"],
+  [57, "ASI04", "known-compromised package releases denied at install and MCP launch; MCP server packages held by version pin and critical checks", "the shipped and signed known-compromised list (cli/package-known-bad.mjs) at install and MCP launch, and mcpPackagePolicy pins and critical checks on MCP server packages"],
   [50, "ASI04", "hidden characters in MCP tool metadata only", "mcp-hidden-canary runs at the tool stage on tools/list"],
   [60, "ASI04", "MCP tool descriptors and auto-loaded agent config; no provenance check", "tool-stage descriptor scan and index-stage scan of auto-loaded config"],
   [54, "ASI05", "reverse-shell / remote-exec payloads, and shell-command injection in MCP tool arguments", "exec-reverse-shell, plus mcp-arg-command-injection on tools/call arguments"],
@@ -148,7 +149,9 @@ const AGENTIC = [
   [73, "ASI06", "local agent transcript files only", "agent-history-tamper matches a forged or rewritten transcript store"],
   [66, "ASI07", "sub-agent handoffs on one host, logged and scanned for injection; no message authentication", "handoff edges logged, delegated prompt scanned, orphan sub-agents flagged"],
   [75, "ASI09", "deceptive links in output only", "out-link-deceptive compares a link's shown address with its real host"],
+  [93, "ASI08", "per-session sub-agent spawn rate and depth, consecutive identical failing calls, and a hold after repeated denials, in the Claude Code hook and the Agent SDK; no validation of one agent's output before another consumes it, no cross-session or cross-host fan-out view, failures counted only where the host reports them", "policy.cascadeLimits (data/cascade-limits.js, cli/cascade-state.mjs) in the hook and the Agent SDK"],
   [64, "ASI10", "actions outside a declared envelope or a learned baseline, by name and path", "entitlement drift and learned first-seen drift post under #64"],
+  [88, "ASI10", "an agent launching, installing or scheduling another agent CLI from a shell command; report-only by default", "agent-deploy and agent-deploy-schedule-file (data/agent-launch.js) on shell commands and scheduler files"],
   [84, "ASI10", "an agent weakening the project's monitoring, alerting, audit logging or safety tests, and not disclosing it", "the oversight checks judge the agent's own edits and commands, and Stop checks the final message discloses an allowed change"]
 ];
 
@@ -162,6 +165,7 @@ const MCP = [
   [50, "MCP03", "hidden characters in MCP tool metadata only", "mcp-hidden-canary at the tool stage"],
   [60, "MCP03", "description and schema text only", "mcp-tool-poisoning, mcp-tool-poisoning-i18n and mcp-tool-cred-path on tools/list"],
   [54, "MCP05", "reverse-shell / remote-exec payloads, and shell-command injection in MCP tool arguments", "exec-reverse-shell and mcp-arg-command-injection, which the MCP gateway runs on tools/call arguments"],
+  [57, "MCP04", "MCP server launches held when unpinned, off the org's pinned version or failing a critical pre-install check (mcpPackagePolicy), and known-compromised releases denied at install and at MCP launch; exact versions only, no transitive dependencies, no signature verification", "mcpPackagePolicy (cli/mcp-package-policy.mjs) at MCP server launch in the hook and the stdio guard, and the known-compromised list at install and launch"],
   [57, "MCP05", "remote scripts piped to a shell and installs from untrusted sources", "fetch-then-exec and pkg-install-untrusted"],
   [3, "MCP06", null, "override phrasing in MCP tool results and fetched content at the file stage"],
   [40, "MCP06", null, "imperatives in tool output, files and index content"],
@@ -172,7 +176,9 @@ const MCP = [
   [72, "MCP06", "file-metadata channel only", "metadata directive scan"],
   [74, "MCP06", "self-replication directives only", "inj-self-replication"],
   [73, "MCP08", "tampering with local agent transcript files only", "agent-history-tamper protects the agent's own record of what it did"],
-  [25, "MCP09", "calls to servers off the approved allow-list; no discovery of deployed servers", "policy.mcpAllow"]
+  [25, "MCP09", "calls to servers off the approved allow-list; the AIBOM lists configured and listening servers but raises no finding", "policy.mcpAllow"],
+  [91, "MCP10", "includeContext on MCP sampling requests at the MCP guard and gateway; other context sharing between users or sessions is not observed", "includeContext on sampling requests, judged by mcp-proxy/sampling-scan.mjs at the stdio guard and the HTTP gateway"],
+  [92, "MCP10", "what an agent sends in one MCP call (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed", "the over-sharing signal in cli/mcp-outbound.mjs, merged into mcpGateway on every MCP surface"]
 ];
 
 for (const [label, f, table] of [["Agentic", FW[0], AGENTIC], ["MCP", FW[1], MCP]]) {
@@ -209,8 +215,6 @@ test("OWASP-MAP: the credits the review rejected stay uncredited", () => {
     [38, "owaspAgentic", "ASI08", "one session's loop and call rate, not propagation across agents"],
     [1, "owaspMcp", "MCP10", "DLP keeps data out of the context; sharing between users or sessions is not observed"],
     [36, "owaspMcp", "MCP10", "coaching rule with no detection"],
-    [57, "owaspAgentic", "ASI04", "the agent's project dependencies, not agent or MCP components"],
-    [57, "owaspMcp", "MCP04", "the agent's project dependencies, not MCP components"],
     [62, "owaspMcp", "MCP04", "general-purpose package names; MCP server names are checked by the reputation layer, which posts under no rule"],
     [2, "owaspMcp", "MCP06", "MCP06 excludes a user's own direct injection by definition"],
     [61, "owaspMcp", "MCP05", "code written into the project, not a command the agent runs"],
@@ -234,18 +238,18 @@ function coverage(f) {
   return out;
 }
 
-test("OWASP-MAP: Agentic coverage — 1 covered, 8 partial, ASI08 uncovered", () => {
+test("OWASP-MAP: Agentic coverage — 1 covered, 9 partial, none uncovered", () => {
   const c = coverage(FW[0]);
   assert.deepEqual(Object.keys(c).filter((k) => c[k] === "covered"), ["ASI01"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["ASI02", "ASI03", "ASI04", "ASI05", "ASI06", "ASI07", "ASI09", "ASI10"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), ["ASI08"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["ASI02", "ASI03", "ASI04", "ASI05", "ASI06", "ASI07", "ASI08", "ASI09", "ASI10"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), []);
 });
 
-test("OWASP-MAP: MCP coverage — 1 covered, 6 partial, MCP04 / MCP07 / MCP10 uncovered", () => {
+test("OWASP-MAP: MCP coverage — 1 covered, 8 partial, MCP07 uncovered", () => {
   const c = coverage(FW[1]);
   assert.deepEqual(Object.keys(c).filter((k) => c[k] === "covered"), ["MCP06"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["MCP01", "MCP02", "MCP03", "MCP05", "MCP08", "MCP09"]);
-  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), ["MCP04", "MCP07", "MCP10"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "partial"), ["MCP01", "MCP02", "MCP03", "MCP04", "MCP05", "MCP08", "MCP09", "MCP10"]);
+  assert.deepEqual(Object.keys(c).filter((k) => c[k] === "uncovered"), ["MCP07"]);
 });
 
 test("OWASP-MAP: the readers normalise a missing or malformed tag to []", () => {

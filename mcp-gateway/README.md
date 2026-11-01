@@ -81,13 +81,14 @@ Same engine, detectors, policy and alert shapes as the stdio proxy; the call ord
 | | | `mcpToolDrift: "block"`: the tool changed, was added, or shadows another server's tool since the approved baseline; or it was never in a listing the gateway checked. Past `mcpToolRecheckSeconds` (or after `notifications/tools/list_changed`) the gateway lists the upstream itself first, so a tool changed after the client's last listing is caught | refused, `MCP_TOOL_DRIFT`; released when the console re-approves. A re-list that fails follows `failMode.mcpGateway` |
 | | | server reputation below `mcpReputation.blockBelow` (identity: the upstream URL) | refused on an enforcing device |
 | | | **declared workload profile** (`workloadProfiles`, below) | report or block per profile; `PROFILE_DRIFT` |
-| | | `mcpGateway`: server allow-list (#3) → per-tool argument rules (#18) → argument content scan (#2) | per policy |
-| | | **local secret egress (#65)** — a value from this machine's `.env*` (gateway cwd), `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials` appearing verbatim in the arguments. The hook's check; the stdio proxy does not run it | per policy; the default resolves #65 to block |
+| | | `mcpGateway`: server allow-list (#3) → per-tool argument rules (#18) → argument content scan (#2), then the argument values with their line breaks, base64 / `data:` content decoded (data-loss detectors; a decoded Office or PDF file's `labelPolicy` send verdict, read in place past the decode caps; a value not decoded whole (over 1 MiB, or past 4 MiB per call), an image too, or a label not read follows the fail mode, and an unread label is refused when a `labelPolicy` rule blocks sending) and the over-sharing signal (`mcpOversharing`; [`../cli/mcp-outbound.mjs`](../cli/mcp-outbound.mjs); no call is exempt here, a write-shaped tool name included, because every upstream is remote) | per policy; over-sharing reports by default |
+| | | **local secret egress (#65)** — a value from this machine's `.env*` (gateway cwd), `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials` appearing verbatim in the arguments. The hook's check; the stdio proxy runs it too | per policy; the default resolves #65 to block |
 | | | **files the arguments name** — only with `--local-files` (or `"localFiles": true` on a route); under a signed `labelPolicy`, each file's Microsoft Purview sensitivity label too | per policy; a label that cannot be read follows `failMode.mcpGateway` |
 | | | **vector-store write** — a tool in `policy.indexTools`, or matched by the name / argument heuristic ([`../cli/index-tools.mjs`](../cli/index-tools.mjs)): its arguments are scanned at the `index` stage | reported at stage `index`; refused (`MCP: blocked vector-store write`) only under `policy.indexScanAction: "block"` |
 | | | **class default** (policy `mcpToolClassDefaults`; [`../cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs)), merged by rank after the argument, file and vector-store checks and before an ask is settled; the tool's `annotations` from this route's listings count only when they make it stricter | ask or block per class; `MCP_TOOL_CLASS` |
 | | `Mcp-Name` / `Mcp-Method` header ≠ body | header–body consistency | HTTP 400, `-32020` |
 | server → client | `tools/list` result | tool stage: #60 poisoning (incl. credential-path descriptions), #50; drift against the shared tool baseline (rug-pull, capability expansion, shadowing) | alert; a blocking policy quarantines the tool. Never altered, except under `mcpToolDrift: "block"`, where a quarantined tool is left out of the list (JSON body or SSE event) |
+| | `sampling/createMessage` / `elicitation/create` (a server request on the stream, or a result's `inputRequests`) | sampling scan ([`../mcp-proxy/sampling-scan.mjs`](../mcp-proxy/sampling-scan.mjs)) at stage `file`; `includeContext` reported | alert at stage `sampling`; refused under `samplingScanAction` / `samplingContextAction` `"block"` or a block resolution: JSON-RPC error `-1` POSTed upstream on the client's session ([`sampling.mjs`](sampling.mjs)) and a `notifications/message` to the client in its place; an `inputRequests` result becomes a tool error; text past the tool-result bounds follows `failMode.mcpGateway` (closed refuses; open forwards and reports) |
 | | any other result (JSON or each SSE event) | result scan at stage `file` | alert; replaced by a tool error when policy resolves to block |
 | | any response | staged validation | reported; an invalid **`tools/call` result** is replaced by a tool error (`--schema enforce`); a listing is never altered |
 | | a JSON response / one SSE event over `--max-response-bytes` (4 MiB) | size cap | refused with `RESPONSE_TOO_LARGE` |
@@ -325,7 +326,7 @@ or large bodies.
     alert per refusal: `reasonCode: FAIL_CLOSED`, category `Fail-closed: MCP call not evaluated` /
     `Fail-closed: MCP result not evaluated`, `basisCode`, `enforcement: STRENGTHENED`, `failMode: "closed"`,
     `failModeSource` (`admin` / `policy`), `failWhy` (`error`, `no-engine`, `timeout`, `budget`,
-    `reputation`). A fail-closed refusal does not count toward the client's cool-down.
+    `reputation`, `size`: a sampling or elicitation request with text past the scan bounds, or encoded argument content past the decode caps; `label`: a file's sensitivity label that could not be read). Under `open`, encoded argument content past the decode caps is forwarded with an alert, `MCP: outbound arguments not fully evaluated` (threat id 0, Medium, `failWhy` `size` or `label`), once per server and tool in this process. A fail-closed refusal does not count toward the client's cool-down.
   - Unenrolled (coach) never refuses: forwarded, as for every other block. An admin binding that sets this
     gateway closed counts as management evidence (enforce without a token), and with no verified policy it
     selects `OFFLINE_DEFAULT_POLICY`, as a fail-closed posture does.
@@ -463,6 +464,94 @@ included.
   then needs a placeholder.
 - **Secrets are read once.** Rotating one means restarting the gateway.
 
+## OAuth token checks
+
+Configured only by the signed policy key `mcpOAuth` ([`oauth-gate.mjs`](oauth-gate.mjs),
+[`oauth-token.mjs`](oauth-token.mjs), [`oauth-as-check.mjs`](oauth-as-check.mjs)). The MCP 2026-07-28
+authorization text they apply: "MCP servers MUST NOT accept or transit any other tokens", "The MCP server
+MUST NOT pass through the token it received from the MCP client", and the `resource` parameter "ensures that
+access tokens are bound to their intended resources and cannot be misused across different services".
+
+The token checks run on every request with `Authorization: Bearer …`, on every method, before the body is
+read. A placeholder (`moorai-ph:…`) is skipped. The gateway holds no key for any token, so it reads a JWT
+access token's claims (RFC 9068 `aud`, `iss`, `scope` or `scp`) without verifying the signature. A refusal
+can only make it stricter: a token it forwards still has to pass the remote server's own validation, so a
+forged claim gains nothing. Expiry is not checked.
+
+| Check | Fires when | Default | Refused with |
+|---|---|---|---|
+| audience (`audience`) | at least one `aud` value is an http(s) URI and no value is the route's remote server (same origin, and the audience's path is the remote's path or a whole-segment prefix of it), the gateway route the client uses (its `Host`; loopback names count as one), or an audience listed in `audiences.<server>` | `report` | 401, `WWW-Authenticate: Bearer resource_metadata="<the route's metadata URL>", error="invalid_token"`, so the client can obtain a token for this route |
+| issuer (`issuer`) | `iss` is not one of the `authorization_servers` in the remote's protected-resource metadata. Known only after the gateway has served that metadata once; before that there is no verdict | `report` | 401, as above |
+| scope (`scopeAction`, list `scopes.<server>`) | the token holds a scope that is not in the list. No list for the server, no check | `report` | 403 |
+| reuse (`tokenReuse`) | a bearer value (an opaque token, or a JWT whose `aud` values are not all http(s) URIs) was already sent on a route whose remote server is another origin. Held in process memory only, as a sha256 prefix, at most 4,096 values | `report` | 401, as above |
+| malformed (follows `audience`) | the `Authorization` value names the Bearer scheme but is not exactly one token: two tokens, trailing text, a comma, or a second `Authorization` header (Node keeps only the first, which is what the gateway forwards). Every token-shaped part of it still gets the audience, issuer, scope and reuse checks | `report` | 400, `WWW-Authenticate: Bearer resource_metadata="…", error="invalid_request"` (RFC 6750 3.1) |
+| challenge scope | a remote 401 / 403 challenge's `scope` asks for a scope outside `scopes.<server>` | reported only | |
+| authorization server (`authServer`) | below | `off` | 502 on the metadata URL |
+
+```json
+{ "mcpOAuth": { "audience": "block", "audiences": { "atlassian": ["https://api.atlassian.com"] },
+                "scopes": { "github": ["repo:read"] }, "scopeAction": "block",
+                "issuer": "report", "tokenReuse": "report", "authServer": "block" } }
+```
+
+Each mode is `"block"`, `"report"` or `"off"`; any other value is the default. On an unenrolled device
+(coach) a block is reported with decision `coach` and forwarded. An `aud` value that is not an http(s) URI (a
+client id, a GUID) cannot vouch for the route: beside URIs that all name another resource the token still fails
+the audience check. A token whose `aud` values are all non-URI gets no audience verdict and is forwarded.
+
+**Authorization servers.** With `authServer` set to `"report"` or `"block"`, the gateway reads the metadata
+of each authorization server (at most four) that the remote's protected-resource metadata names, before it
+serves that metadata. Metadata that names more than four fails the check as a whole (`too-many-servers`, nothing
+fetched), so no authorization server is served unchecked; the document is refused, not rewritten, so a client
+never sees a list the remote did not publish. It tries the URLs in the revision's order (RFC 8414 path insertion, then OpenID Connect
+Discovery path insertion and path appending), through the route's egress checks. The remote chooses these
+URLs, so each fetch must also be `https` and reach only public addresses (RFC 9728 7.7: "Clients SHOULD take
+appropriate precautions against SSRF attacks, such as blocking requests to internal IP address ranges"): an IP
+literal is checked before the fetch and every address a name resolves to before the connection, on a new
+connection each time. Loopback (`http` or `https`) is allowed only when the route's own remote server is on
+loopback; private, link-local, unique-local and cloud metadata addresses (169.254.169.254, fd00:ec2::254 and the
+others egress rules treat as metadata) never are. A fetch these address checks refuse is never made, and the
+authorization server fails the check (`address`): the client would otherwise be sent to that address itself.
+It then checks three things, each against the revision's text:
+
+- `issuer` is identical to the identifier the URL was built from ("If they differ, the client MUST NOT use
+  the metadata");
+- every endpoint is `https` ("All authorization server endpoints MUST be served over HTTPS"; loopback `http`
+  is accepted, as for the authorization server itself);
+- `code_challenge_methods_supported` lists `S256` ("If `code_challenge_methods_supported` is absent ... MCP
+  clients MUST refuse to proceed"; clients "MUST use the `S256` code challenge method").
+
+Under `"block"` the route's metadata URL answers 502, so a client that discovers the route through the gateway
+is never pointed at that authorization server. Metadata at an allowed address that the gateway cannot read
+gets no verdict, since the gateway may not reach what the client can. Results are cached with the remote's metadata (5 minutes).
+The metadata URL is served without the gateway token, because a client reads it before it holds any credential
+(the MCP TypeScript SDK 1.32.1 fetches it on a 403 step-up with none of its configured headers). Anyone who
+can reach the gateway can therefore make it read the remote's metadata and, with `authServer` on, the
+authorization servers' metadata; concurrent requests share one read, so that happens at most once per route
+per 5 minutes.
+
+**Alerts.** Reason code `MCP_OAUTH` with `oauthCheck` (`audience`, `issuer`, `scope`, `reuse`, `malformed`,
+`challenge-scope`, `auth-server`), `decision`, the route's server label, and `excessScopes` (a count) or
+`authServerChecks` (`address`, `issuer`, `https`, `pkce`, `too-many-servers`). No token, claim value, scope name, URL or hash of any of
+them. Posted once per process for each server, check and decision; every finding goes to the local ledger.
+
+**What these checks do not cover:**
+
+- **Opaque tokens** get no audience, issuer or scope verdict, only the reuse check, and only across this
+  gateway's routes during one process lifetime. The reuse check reports the second origin a value reaches,
+  even when the first was the wrong one.
+- **The authorization flow never passes through the gateway.** The authorization request (`redirect_uri`,
+  `state`, the PKCE challenge actually sent), the token request, refresh-token use and client registration go
+  from the client to the authorization server directly; the gateway forwards only its exact route paths. So
+  it does not check redirect URIs, `state` relay, authorization-URL phishing or refresh tokens.
+- **A client that does not discover through the gateway** (a static `Authorization` header, or metadata from
+  elsewhere) is not covered by the authorization-server check, and the issuer check has no metadata to use
+  until some client has read it through the gateway.
+- **Tokens a remote server sends further downstream** are not seen.
+- Tested against a fake resource server and a fake authorization server
+  (`test/mcp-gateway-oauth.test.mjs`); no real authorization server or real OAuth client has been run through
+  these checks.
+
 ## Run
 
 ```bash
@@ -531,6 +620,8 @@ must turn the run red.
   refuses it unless its authorization server issues tokens for that resource. Tested against a fake
   resource server only (`test/mcp-gateway-2026.test.mjs`); no real authorization server or real OAuth
   client has been run through it. A static `Authorization` header in the client's config works as before.
+  The bearer token's audience, issuer, scope and reuse, and the authorization servers the metadata names, are
+  checked under policy `mcpOAuth`: see "OAuth token checks" above.
 - **2026-07-28 request headers.** `Mcp-Param-<Name>` headers mirrored from `x-mcp-header` tool parameters
   (learned from the route's judged `tools/list`) are validated against the body ("Any server that processes
   the message body MUST validate that encoded header values, after decoding if Base64-encoded, match the
@@ -617,6 +708,10 @@ must turn the run red.
 | `policy.mjs` | Verified policy + engine + coach/enforce, as the proxy loads them. |
 | `fail.mjs` | The fail mode (`failMode.mcpGateway`): refuse or forward what the gateway could not judge, and its `FAIL_CLOSED` alert. |
 | `report.mjs` | Content-free alerts and ledger lines (`gateway:<tool>`); each request's session and trace. |
+| `oauth-discovery.mjs` | OAuth protected-resource metadata for a route; the remote's challenge rewritten to it. |
+| `oauth-gate.mjs` | Policy `mcpOAuth`: the token checks on each request, the challenge scope, the authorization-server check at discovery, and their `MCP_OAUTH` alerts. |
+| `oauth-token.mjs` | Bearer-token reading (JWT claims, unverified), audience / issuer / scope verdicts, the in-memory reuse table. |
+| `oauth-as-check.mjs` | Authorization-server metadata URLs, the address checks on fetching them, and the issuer / https / PKCE checks. |
 | `../model-proxy/trace-w3c.mjs` | W3C trace context for one hop, shared with the model proxy and the stdio guard. |
 | `validate.mjs` | Staged JSON-RPC / MCP validation (C5 `SCHEMA_INVALID`). |
 | `cooldown.mjs` | Per-client cool-down (C5 `CLIENT_COOLDOWN`). |

@@ -1,7 +1,8 @@
 # Agent identity in MoorAI: design proposal
 
 Status: **Phase 1a (agent kind and version on every alert) is built** in the working tree on 2026-10-10, not yet
-released (§5.7 says what is verified). Phases 1b, 2 and 3 are still proposals. Baseline: agent v1.10.0 (`9fb0116`), console v0.80.0
+released (§5.7 says what is verified). Phases 1b, 2 and 3 are still proposals. **§12 (2026-10-31): agent session
+identity tokens and the credential broker model; its Phase A is built** in the working tree, unreleased. Baseline: agent v1.10.0 (`9fb0116`), console v0.80.0
 (`89aa9b3`, `gitayg/curaiq-server`). Written 2026-10-09.
 
 Line numbers below are from those commits (`git show HEAD:<file>`). The working tree is being edited,
@@ -860,3 +861,115 @@ engineer including tests and docs.
   same way the CLI's does.
 - **Revocation latency.** The console's policy refresh interval, which sets it, was not measured.
 - **Cost estimates.** None are measured.
+
+## 12. Agent session identity and the credential broker (built after agent v1.45.1 / console v0.102.0, unreleased)
+
+Written 2026-10-31 against agent v1.45.1 (`52e269a`) and console v0.102.0 (`51facf8`). Phase A below is built in the
+working tree and tested; phases B and C are proposals. This section does not replace §5-§7: it adds an identity the
+agent *carries* (a signed token) to the identities the console *derives* (the `agt-` registry, §6 as built in console
+v0.96.0) and the attested credentials of §7.
+
+### 12.1 What an agent identity is
+
+An agent identity is four things, each from a source MoorAI already has:
+
+| Part | Source today | Trust |
+|---|---|---|
+| **Owner** | the console's agent ownership (`server/ownership.js`): an explicit owner of the agent kind, else the device user's pseudonym for a local coding agent | admin-entered or derived; no directory sync |
+| **Device** | the device's ed25519 key (`~/.moorai/agency-ed25519.key`, `data/agency-sign.mjs`), pinned by the console on first use (`agencyPub:<tenant>:<device>`, `server/db.js` `insertAlert`) | proves "a process of this device's OS user", not a process |
+| **Agent host** | the agent name (`cli/agent-names.mjs`): `claude-code`, `codex`, … | self-stated |
+| **Workload** | a session: one run of the agent, `asi-` + 16 random hex, started by `moorai-identity run` | random; attributes, does not authenticate |
+
+The console's `agt-` id (an HMAC of agent name and device, `server/agent-identity.js`) names the long-lived pair
+(agent host, device); an `asi-` session names one run of it, and is linked to its `agt-` row.
+
+### 12.2 Credential broker model
+
+MoorAI sits between the agent and two things it uses: models (the model proxy) and MCP tools (the MCP gateway). A
+broker issues the agent short-lived, scoped credentials instead of the user's long-lived keys, and swaps in the real
+credential only on the route it is scoped to. MoorAI already has the second half: **placeholder credentials**
+(`model-proxy/credentials.mjs`): the agent holds `moorai-ph:<name>`, a host-only bindings file names the real secret,
+the one route and upstream it may reach and the header it goes in. What was missing is the first half, an identity
+the broker can tie a request to. The phases:
+
+- **Phase A (built).** A per-session identity token, minted on the device, verified by the gateway and the model
+  proxy, recorded on alerts, listed and revocable in the console. Not a credential for any upstream.
+- **Phase B (proposal).** Bind placeholder credentials to identities: a binding gains `allow: { agentNames?,
+  sessionsFrom?: "registered" }`, so a swap happens only for a request whose identity verified, is not revoked, and
+  matches; the console serves per-device bindings metadata (never the secret) and revocation removes the swap. Then
+  mint downstream credentials per session through the IdP: OAuth 2.0 token exchange (RFC 8693) at the tenant's IdP
+  with the session as actor, short TTL, scope from the binding, cached per session and dropped on revoke; and an
+  SSF/CAEP receiver/transmitter so an IdP-side revocation ends the MoorAI session and the reverse (§6.3). Phase B
+  needs: an IdP integration per provider (Entra Agent ID, Okta for AI Agents; today the console only stores a
+  manual link, `server/agent-identity.js` `linkIdentity`), a token-exchange client in the gateway and the model
+  proxy, client credentials for the console or the device at the IdP, and a secret store for them on the device that
+  the agent's OS user cannot read (the open `moorai-guardd` install, backlog #19).
+- **Phase C (proposal).** Replace the user-readable device key with one the agent cannot read or export: the
+  `moorai-guardd` helper key (installed by nothing yet), or a Secure Enclave / TPM key; and in server mode the §7
+  SVID / WIT path. Only then can identity *widen* access (§4.3).
+
+### 12.3 Phase A as built
+
+**Token** (`cli/agent-session-identity.mjs`): `mai1.<base64url claims>.<base64url ed25519 signature>`, claims
+`{ v: 1, sid, agent, kid, sat, iat, exp, jti }`: the session id, the agent name, the first 16 hex of sha256 over the
+device key's SPKI, session start, issue, expiry, a random id. No user, hostname, path, prompt or tool name.
+
+**Minting** (`cli/moorai-identity.mjs`):
+- `moorai-identity run -- <agent>` creates the session (default 12 h, at most 24 h), registers it with the console
+  (best effort, 1.5 s; content-free, signed with the device key), and starts the agent with `MOORAI_AGENT_SESSION`,
+  `_START`, `_EXP`, `MOORAI_AGENT_NAME` and `MOORAI_AGENT_IDENTITY`. With `ANTHROPIC_BASE_URL` on a loopback address it
+  adds `X-MoorAI-Agent-Identity: <token>` to `ANTHROPIC_CUSTOM_HEADERS`. Claude Code documents that variable as static
+  headers; it has no refresh for model-request headers, so this token lasts the session.
+- `moorai-identity headers` is an MCP `headersHelper`. Claude Code's MCP docs (code.claude.com/docs/en/mcp, read
+  2026-10-31): "Claude Code runs the helper fresh on each connection, at session start and on reconnect", and "If a
+  tool call returns `401 Unauthorized` or `403 Forbidden`, Claude Code automatically re-runs the helper ... and retries
+  the call once". So the MCP token is short (15 min, `--ttl`) and is replaced after a 401. The helper sends nothing to
+  a non-loopback MCP URL (`CLAUDE_CODE_MCP_SERVER_URL`) unless `--allow-remote`.
+
+**Verification** (`mcp-gateway/identity.mjs`, `model-proxy/identity.mjs`): the header is checked against this device's
+public key (read from the device key; never created by a verifier), the policy's `agentIdentity` bounds and its
+`revokedAgentSessions`, and is never forwarded (both `HOP` sets). Verdicts: `verified`, `expired`, `revoked`,
+`invalid`, `foreign`, `absent`. `agentSession: { id, status, agentName }` rides on every console alert the request
+raises (the gateway's `post()` through an AsyncLocalStorage holder; the model proxy's `REQUEST` store).
+
+**Policy** (signed): `agentIdentity.mode`: `report` (default: record, refuse only a revoked session), `require`
+(refuse anything not verified, 401), `off`. `maxTokenSeconds` (60-86400) and `maxSessionSeconds` (300-604800).
+The model proxy refuses only in `--mode enforce`; in `--mode report` the alert is stamped `LIMITED`.
+
+**Console** (`server/agent-sessions.js`, `-routes.js`, `dashboard-agent-sessions.js`): registration checked against
+the pinned device key; alerts with `agentSession` mapped and counted; a list per device and owner; revoke with a
+reason (governance log `agentSession.revoke`); `revokedAgentSessions` served tenant-wide for 8 days in the signed
+policy.
+
+**Measured.** One live run (a scratch script, not a committed test: the real console process, the real gateway at its
+default 60 s refresh, the CLI running `run` and `headers`): registration verified against the pinned key, first call 200, the first 403 came 58.9 s after
+the revoke, and the console showed the session with the gateway's revoked alert mapped to it. The bound is the
+gateway's 60 s refresh plus the 60 s a shared policy cache is fresh (§11's open revocation-latency item, now
+measured once). Tests: `test/agent-session-identity.test.mjs`, `test/agent-identity-gateway.test.mjs`,
+`test/agent-identity-model-proxy.test.mjs`; console `test/agent-sessions.test.js`.
+
+### 12.4 What MoorAI can and cannot enforce with it
+
+Can:
+- refuse, at the gateway and the model proxy, every request of a session an administrator revoked, within one policy
+  refresh, including fresh tokens minted for the same session;
+- under `require`, refuse every MCP or model request (through MoorAI) that does not carry a verified identity from
+  this device;
+- attribute every gateway and model-proxy alert to a session, an agent identity and its owner.
+
+Cannot:
+- tell the agent from another process of the same OS user: all of them can read the device key and mint any
+  session (Phase C);
+- stop the user starting a new session after a revocation (it shows in the console as a new session);
+- see requests that do not go through the gateway or the model proxy; the Claude Code hook does not check the token;
+- verify a token minted on another host or container (different key: `foreign`);
+- issue or revoke credentials at an IdP, or bind an upstream credential to a session (Phase B).
+
+### 12.5 Not verified
+
+- A live Claude Code session running `moorai-identity headers` as a `headersHelper`, and its retry after a 401: the
+  behaviour is from Claude Code's docs, not observed. The live run used the CLI to make the requests.
+- `ANTHROPIC_CUSTOM_HEADERS` reaching the model proxy from a live Claude Code (docs only; requires Claude Code
+  2.1.227 or later per its env-var reference).
+- Revocation latency beyond one sample; the model proxy's latency (same 60 s runtime refresh, not measured).
+- Windows and Linux (tests ran on macOS).

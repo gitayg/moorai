@@ -145,7 +145,7 @@ export function isLoopback(host) {
   return isIP(h) === 4 && h.startsWith("127.");
 }
 // The Host header a loopback listener accepts: a loopback name, with or without a port.
-function hostHeaderOk(header) {
+export function hostHeaderOk(header) {
   const h = String(header || "");
   const name = h.startsWith("[") ? h.slice(0, h.indexOf("]") + 1) : h.split(":")[0];
   return isLoopback(name);
@@ -222,7 +222,7 @@ export function parseArgs(argv, env = process.env) {
   return o;
 }
 
-class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
+export class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
 // Who a request authenticates as: { owner, taskWriter } or null (a wrong or missing bearer where one is
 // required). owner is the intent store's namespace: "" with no --token-file (every local process is the
@@ -246,7 +246,7 @@ function authenticate(req, tokens, taskTokens) {
 // buffered), so the client reads the 413 instead of a connection reset mid-write. Past DRAIN_FACTOR x the
 // cap the socket is dropped: a client that keeps streaming gets no more of the server's time.
 const DRAIN_FACTOR = 8;
-function readJson(req, maxBody) {
+export function readJson(req, maxBody, { raw = false } = {}) {
   return new Promise((res, rej) => {
     if (!/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) { req.resume(); return rej(new HttpError(415, "content-type must be application/json")); }
     const tooBig = () => new HttpError(413, `body over ${maxBody} bytes`);
@@ -263,7 +263,7 @@ function readJson(req, maxBody) {
       if (done) return;
       done = true;
       if (over) return rej(tooBig());
-      try { res(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { rej(new HttpError(400, "body is not valid JSON")); }
+      try { const buf = Buffer.concat(chunks), v = JSON.parse(buf.toString("utf8")); res(raw ? { value: v, raw: buf } : v); } catch { rej(new HttpError(400, "body is not valid JSON")); }
     });
     req.on("error", () => { if (!done) { done = true; rej(new HttpError(400, "request aborted")); } });
   });

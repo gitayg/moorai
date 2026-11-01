@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 86-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 89-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 86 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 89 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -239,7 +239,7 @@ Claude Code GitHub Action, an Agent SDK service in a container
   body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
   Python client with LangGraph / CrewAI examples (not executed) is in
   [`clients/python`](../clients/python/README.md). p50 on 2 KB: SDK `PreToolUse` 1.99 ms, sidecar
-  `/v1/scan` 6.4–11 ms, shell hook process p50 152–159 ms / p95 170–178 ms (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
+  `/v1/scan` 6.4–11 ms, shell hook process p50 151 ms / p95 174 ms for a `Bash` call (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
   each result's `notEvaluated`): circuit breaker, session risk, deletion volume,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
   observes by default and resolves results under the same inbound rules as the hook
@@ -558,15 +558,15 @@ applies a settings file's `env` to hook processes is taken from its documentatio
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 86 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 89 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
 | Critical | 18 | ≥ 20 |
 | High | 49 | 12–19 |
-| Medium | 19 | 6–11 |
+| Medium | 22 | 6–11 |
 
-Note: 8 of the 86 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 89 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -631,6 +631,27 @@ is validated against.
     **Not covered:** an app that embeds without calling MoorAI, an in-process vector library with no MCP
     or API hook, a store tool whose name and arguments match nothing (until named in `indexTools`), and
     documents a store ingests on its own. MoorAI has no vector store or embedding writer of its own.
+12a. **MCP sampling and elicitation requests** — a server's `sampling/createMessage` and
+    `elicitation/create`, as a server-to-client JSON-RPC request (MCP 2024-11-05 to 2025-11-25) or inside
+    `result.inputRequests` (2026-07-28), are judged by the MCP stdio guard and the HTTP gateway before the
+    client sees them ([`mcp-proxy/sampling-scan.mjs`](../mcp-proxy/sampling-scan.mjs)). The system prompt,
+    messages, request-scoped tools and stop sequences of a sampling request, and the message, URL and
+    requested schema of an elicitation, go to `decideInbound` at stage `file` (the tool-result engine);
+    `includeContext` `"allServers"` / `"thisServer"` is reported as a context request. *Threats 2, 3, 39,
+    40, 50, 60 and the rest of the inbound set.* **Report-first:** refused only when a finding resolves to
+    block / kill, or under `policy.samplingScanAction: "block"` (an instruction threat, the
+    `promptScanAction` list) or `policy.samplingContextAction: "block"` (any `includeContext` but
+    `"none"`). A refused request gets JSON-RPC error `-1` to the server (the gateway POSTs it upstream on
+    the client's session) and a `notifications/message` to the client; a refused `inputRequests` result
+    becomes an `isError` tool result or a JSON-RPC error. Every `inputRequests` entry is read; strings in
+    arrays (stop sequences, an `enum`) are scanned; the text is bounded as a tool result's
+    (`CAPS.maxResultBytes` / `maxResultNodes` / `maxResultDepth`). Unjudged (the scan failed, no engine,
+    or text past those bounds): `failMode.mcpGateway`; past the bounds, open forwards it with a
+    `MCP: sampling request not fully evaluated` alert (threat id 0, Medium, `failWhy: "size"`) and closed
+    refuses it (`FAIL_CLOSED`, basis `UNEVALUATED_SIZE_CAP`); a finding in what was read still refuses it.
+    Content-free
+    alerts at stage `sampling`. **Not covered:** the client's answer going back to the server, a sampling
+    rate or token budget, and user approval of the request (the client's).
 
 ### B2. Skill-surface analysis (client)
 
@@ -1300,6 +1321,20 @@ is validated against.
     `cooldownMin`, default 15) | `off`. Token burn is not measured: no hook input carries usage. State in
     `~/.moorai` under a device-local `session.key` (0600): keyed hashes and counts only, 32 sessions, 24 h.
     **Measured** on scripted sessions: test-fix and build-watch loops raised no alert; runaway loops 3/3.
+17c0. **Cascade limits** — [`data/cascade-limits.js`](../data/cascade-limits.js) (pure),
+    [`cli/cascade-state.mjs`](../cli/cascade-state.mjs) (hook state), in the hook's `PreToolUse` after the circuit
+    breaker and in the Agent SDK runtime's `toolCall` after the task-bound checks. Per session (main agent and
+    sub-agents together): `spawn-rate` (more than `spawnsPerWindow` `Agent`/`Task` calls in `spawnWindowMin`,
+    default 20 in 10), `depth` (child depth > `maxDepth`, default 3; depth from `PostToolUse(Agent)`
+    `tool_response.agentId`, else the unique pending spawn of the child's `agent_type`, else 1),
+    `repeat-failure` (the same keyed call by the same agent after `maxIdenticalFailures` consecutive runs that
+    each got `PostToolUseFailure`, default 5), `denied` (`maxDenied` PreToolUse denials, default 20, then the
+    session is held for `holdMin`, 0 = until it ends). `policy.cascadeLimits.action` `report` (default) | `ask`
+    (allow → ask in `emit`, never touching a deny) | `block` (deny) | `off`; `actions` per limit. Alert: threat
+    #93 (`CASCADE_THREAT_ID`), category `Cascade limit: …`, reason `CASCADE_LIMIT`, `cascade: { kind, count, limit,
+    windowSec?, action }`, once per limit per session. State `~/.moorai/cascade-limits.json` (0600), keyed hashes
+    only, 32 sessions, 24 h; 0.60 ms p50 per call measured. Tests: `test/cascade-limits.test.mjs`,
+    `test/cascade-limits-hook.test.mjs`.
 17c1. **Origin-based session taint** — [`cli/file-origin.mjs`](../cli/file-origin.mjs) `fileOrigin(path)` →
     `null | { source, app, hostHash }`: `quarantine` (macOS `com.apple.quarantine`; `app` its third field),
     `where-froms` (`kMDItemWhereFroms` without quarantine), `zone` (Windows `<path>:Zone.Identifier`,
@@ -2427,6 +2462,70 @@ platform: process.platform })` in the heartbeat body; until it lands, drift is r
 - The CLI verifies a signature only when `--pubkey` is given; it does not use the device's pin.
 - Formats change often; the docs were read on 2026-10-21.
 
+## MCP data harvesting and path scope (`mcpHarvest`, `mcpScope`)
+
+**Status: built; unit tests (`test/mcp-harvest-scope.test.mjs`), real-hook tests (`test/mcp-reads-hook.test.mjs`)
+and real-guard tests (`test/mcp-reads-guard.test.mjs`). Not in the HTTP MCP gateway.**
+Files: [`cli/mcp-harvest.mjs`](../cli/mcp-harvest.mjs) (read classification, dump shapes, the budget state
+machine, the alert), [`cli/mcp-scope.mjs`](../cli/mcp-scope.mjs) (declared scope, path judgement, the verdict,
+the alert), [`cli/mcp-read-step.mjs`](../cli/mcp-read-step.mjs) (the hook's state and decl lookup),
+[`mcp-proxy/read-gate.mjs`](../mcp-proxy/read-gate.mjs) (the guard's in-memory gate). User docs: README "MCP data
+harvesting and path scope".
+
+**Contract: harvesting.**
+- Policy (signed only): `mcpHarvest: { mode, reads, bytes, windowMin }`; `mode` `"off"` | `"report"` (default) |
+  `"ask"` | `"block"`; defaults 100 reads, 5242880 bytes, 30 minutes. A malformed field takes its default.
+- A read call: `resources/read` (hook: `ReadMcpResourceTool {server, uri}`), or a `tools/call` whose
+  `classifyMcpTool` class is read or detokenize, or unknown with a name token in `query`, `queries`, `sql`,
+  `select`, `fetch`, `export`, `dump`, `download`, `retrieve`, `lookup`. Distinct key: a keyed hash of
+  `server \n tool \n canonicalJson(args)` (the URI for a resource read).
+- Per (session, server) in the hook, per process in the guard: distinct reads and result bytes inside the
+  window. Hook result bytes: the PostToolUse hook input's length, for an `mcp__*` read only. Guard result bytes:
+  the response line's length for a response to a counted read; a line streamed raw past the 1 MB cap counts as
+  the bytes buffered before streaming.
+- Signals: `reads` (distinct reads ≥ `reads`), `bytes` (≥ `bytes`), `dump` (a read call whose string arguments
+  match `COPY … TO '…'|"…"|STDOUT|PROGRAM`, `INTO OUTFILE|DUMPFILE`, `BACKUP DATABASE`, `pg_dump`, `pg_dumpall`,
+  `mysqldump`, `mongodump`, `mongoexport`, ` .dump`). Each posts once per key per window: threat 59, stage
+  `behavior`, reason `BEHAVIOR_SIGNAL`, `contentHash` `mcp-harvest:<kind>`, `signature { kind, reads, bytes,
+  windowMin, thresholds, mode }`, `mcpServer`. No tool argument, URI, path or result text.
+- Verdict: under `ask` / `block`, a read call while any signal holds (and a dump call) takes ask / deny, merged by
+  rank with the surface's verdict (never weaker). A non-read call and a result are never held. Hook: an unenrolled
+  device coaches. Guard: a denied `resources/read` is answered with JSON-RPC error `-32001`; an ask is forwarded.
+- Session-risk mass read (hook): each distinct MCP read call joins `reads` in `session-risk.json` under
+  `h("mcp:" + readIdentity)`.
+- State: hook `~/.moorai/mcp-harvest.json` (0600), keyed hashes under `session.key`, 64 keys; guard in memory,
+  HMAC under a random per-process key.
+
+**Contract: path scope.**
+- Policy (signed only): `mcpScope: { mode, servers: { <label>: { mode, roots } } }`; `mode` `"off"` | `"report"`
+  (default) | `"ask"` | `"block"`, a server's own mode wins.
+- Declared scope, first that applies: policy roots (any server); for a filesystem server
+  (`@modelcontextprotocol/server-filesystem[@version]`, a bin named `mcp-server-filesystem`, or
+  `…/server-filesystem/dist/index.js`), the client's `file://` roots from its `roots/list` answer (guard), then
+  the non-option arguments after the package. Hook decl lookup: `findServerDecl` (`~/.claude.json`, `.mcp.json`,
+  Cursor, Claude Desktop). No source: not judged.
+- Path arguments: string leaves under keys `path`, `paths`, `source(s)`, `destination`, `file(s)`, `filePath(s)`,
+  `filename`, `src`, `dst`, `dest`, `dir`, `directory`, `root`, `target`, `uri` (case and `_-.` ignored), 64 leaves,
+  depth 6. `file:` URIs converted; other schemes and, on a POSIX host, Windows drive paths skipped. A walk that
+  stops at the leaf or depth cap with a path-named string or a non-empty object or array left, or a leaf over
+  4096 characters, adds kind `unjudged` (category `MCP: path arguments the scope check could not read in full`
+  when it is the only kind), which takes the mode's verdict like the others.
+- Resolution: `~` expanded, absolute resolved, relative against the first root it stays inside else the first root.
+  Roots in given and real (nearest existing ancestor) form. Kinds: `traversal`, `outside`, `symlink`, `unjudged`.
+  Containment by `cli/path-within.mjs` segments (case-folded on macOS and Windows), a root itself inside.
+- Alert: threat 64, stage `mcp`, reason `ENVELOPE`, category by listing tool / traversal / other,
+  `signature { kinds, paths, checked, scope, listing }`. Verdict report → allow, ask → ask, block → deny, merged by
+  rank.
+
+**Not proven.**
+- The default budgets were not measured against real MCP traffic.
+- The hook path where Claude Code sends `ReadMcpResourceTool` to a `ReadMcpResourceTool` matcher was not run in a
+  live Claude Code session; the tool name and its `{server, uri}` input were read from the 2.1.295 binary, and
+  its matcher rule (a plain-word matcher is an exact name) from the same binary.
+- The guard's count of a response line over 1 MB that arrives with its newline (parsed path) has no test; the
+  raw-streamed path has one.
+- A filesystem server started under docker or with a relative root is not judged.
+
 ## MCP server network sandbox (`mcpServerSandbox`)
 
 **Status: built; unit tests (`test/mcp-server-sandbox.test.mjs`) and real-guard tests
@@ -2837,7 +2936,9 @@ command that reads one or dumps the environment; an MCP call whose arguments nam
 `WebSearch` results never teach. The SDK runtime (behind `moorai-serve` and the model proxy) learns from a
 `Read` through `toolCall` as the hook does, and from every inbound scan (`/v1/scan` with `ctx.inbound`, the
 SDK's `PostToolUse`, a tool result in a model-proxy request) except `WebFetch` / `WebSearch`, provider tokens
-and named assignments only. The MCP gateway learns from each remote result it scans.
+and named assignments only. The MCP gateway learns from each remote result it scans, and the Claude Desktop
+stdio guard from each tool result its server returns (`cli/mcp-secret-egress.mjs`, in memory, per guard
+process).
 
 - **How much is read.** Learning reads the whole result, past the scan surfaces' own caps: the hook learns
   from the whole file a `Read` names and the whole tool response, not the 256 KiB file head or the 64 KB
@@ -2890,7 +2991,7 @@ and named assignments only. The MCP gateway learns from each remote result it sc
   re-read refreshes it.
 - **Sinks.** Session-read secrets are matched where a flow leaves: a `Bash` / `PowerShell` command with
   network egress (an upload or a named host), a `WebFetch`, an MCP tool call (hook, SDK `toolCall`,
-  `moorai-serve /v1/tool-call`, the model proxy's tool calls in responses, the MCP gateway). Store secrets,
+  `moorai-serve /v1/tool-call`, the model proxy's tool calls in responses, the MCP gateway, the stdio guard). Store secrets,
   raw or encoded, are matched where #65 ran before: every shell command, `WebFetch`, MCP call and new-file
   write.
 - **Cost** (median of 50, 50 tracked secrets over 40 lengths, 100 KB payload, Apple silicon): 0.9–4.0 ms per
@@ -2981,6 +3082,131 @@ through it the Claude Desktop stdio proxy and the HTTP MCP gateway's `--local-fi
   `test/sensitivity-labels-hook.test.mjs` (real hook: Read, Bash read/upload, MCP upload, fail mode),
   `test/sensitivity-labels-proxy.test.mjs`, `test/sensitivity-labels-gateway.test.mjs`; fixtures generated by
   `test/fixtures/label-files.mjs`.
+## Outbound MCP arguments and over-sharing (`mcpOversharing`)
+
+[`cli/mcp-outbound.mjs`](../cli/mcp-outbound.mjs), merged into `mcpGateway` (`cli/hook-core.mjs`) after the
+argument content scan, so the Claude Code hook, the Claude Desktop stdio guard, the HTTP MCP gateway and
+`@moorai/agent-sdk` run it on every `tools/call`. Additive: a finding is added only for a threat id the
+serialized-JSON scan did not raise, and the decision is merged by rank (never lowered).
+
+- **Values with their line breaks.** `mcpGateway` scans `JSON.stringify(arguments)`, where a line break inside
+  a value is the two characters `\n`; a detector that reads lines (`secret-heading-list`) or a word boundary
+  at a line start (`dlp-jwt`) does not fire there. When any string value holds a character JSON
+  escapes, the string values (depth ≤ 32, ≤ 10,000 values) are joined with real line breaks (≤ 2 MiB) and
+  scanned at `prompt` with `{ egress: true }`, restricted to the data-loss threat ids of
+  `data/data-tiers.js` (#15, #39, #9, #1, #44, #90).
+- **Encoded content.** A value is taken for encoded when it is a `data:…;base64,` URI (whatever else it
+  holds), or 64+ characters of which at least 95% are base64 / base64url characters or `=`
+  (`OUTBOUND_CAPS.minAlphabet`; whitespace counts against it) and that hold a digit, `+`, `/`, `_` or `-`.
+  It is decoded in memory the way a lenient decoder reads it: Node's `Buffer.from(value, "base64")` skips
+  every character outside both alphabets and stops at the first `=`; Python's `base64.b64decode` (default
+  `validate=False`: "characters that are neither in the normal base-64 alphabet nor the alternative alphabet
+  are discarded") reads `-` and `_` as characters to skip, so a value holding either is decoded both ways
+  (measured, Node 22.23 and Python 3.9: `QU!JD*REVG` → `ABCDEF` in both; `-_-_` → `fbffbf` in Node and empty
+  in Python's `b64decode`). An `=` before the end of the value (anything but one or two closing `=`) makes
+  it lenient, and decoders differ past it, so two more readings are decoded: the runs between `=` joined
+  (Python 3.14's `b64decode` drops the `=` and reads on) and each run decoded on its own, the bytes one
+  after another (GNU coreutils `base64 -d`, with or without `-i`). Measured on `QQ==QUJD`: Node 22.23
+  `Buffer.from` and Python 3.9, 3.11 and 3.12 `b64decode` / `binascii.a2b_base64` give `A` (stop at the
+  first `=`); Python 3.14.8 gives `ABCDEF` for `QU==JDREVG` and an error for `QQ==QUJD`; GNU coreutils 9.1
+  gives `AABC`; BusyBox 1.36 gives `A` and an error (it reads on only when the `=` closes a 4-character
+  group: `QUJD=REVG` → `ABCDEF`); Go 1.26 `StdEncoding`, `URLEncoding`, `Strict()` and `NewDecoder` return
+  an error with only the bytes before the `=` (`RawStdEncoding` none); `atob`, Python's `validate=True`
+  (3.11+ `strict_mode=True`) and macOS `base64 -d` refuse the value; `openssl base64 -d -A` returns nothing.
+  Java's `Base64.getDecoder()` / `getMimeDecoder()` were not run (no JRE here); their source (OpenJDK
+  `java/util/Base64.java`, `decode0`) throws `IllegalArgumentException` on a base64 character after the
+  padding, the MIME decoder included. A value whose readings hold under half the bytes its characters give
+  (runs of one character between `=` carry none) is not evaluated (`why: "size"`). Each reading counts
+  toward the budget: 1 MiB per value (the largest reading), 4 MiB per call; there is no cap on the number of
+  values. Decoded text (≤ 2% control or invalid UTF-8 characters) is scanned at
+  `file` with the same threat ids, whatever file type its first bytes name. A decoded ZIP, PDF or OLE file
+  gets `labelPolicy`'s `send` verdict from `readSensitivityLabelsBytes` (the same reader over the buffer;
+  finding `match: "label-path:mcp-arg:<keyed hash of the value>"`), for at most 8 files per call
+  (`labelReads`). The body of an Office or PDF file is not decompressed. Hex is not decoded.
+- **Not decoded whole: unevaluated.** A value over 1 MiB, or one that does not fit what is left of the 4 MiB,
+  is not evaluated (`why: "size"`), whatever it is: an image, a video or an Office file as much as text. What
+  is left of the budget is still scanned from its start, so a finding there still decides. Under an active
+  `labelPolicy`, a ZIP, PDF or OLE file by its first bytes also has its label read in place by
+  `readSensitivityLabelsAt` (`cli/sensitivity-labels.mjs`), which decodes only the byte ranges the reader
+  requests (the ZIP's end record, central directory and one or two XML parts; the PDF's head and tail
+  windows; the OLE header, directory sectors and FAT entries), within `LABEL_CAPS` and `labelReads`; this
+  reader returns `unreadable`, not `none`, for a ZIP, OLE or PDF file by its magic, whatever its name, with
+  no end of central directory, an OLE directory that does not parse, or no `%%EOF` after a `trailer` or
+  `startxref` in the last 1,024 bytes. A label is unevaluated (`why: "label"`) when it was not read (past
+  `labelReads`), could not be read (`unreadable`, as for a named file), or was read from a ZIP, PDF or OLE
+  file in a value whose decoding skipped characters or mixed the two alphabets (a decoder unlike Node's and
+  Python's could read other bytes there). Returned as `mcpGateway(...).unevaluated = { why, values }`; it
+  never lowers a decision. When a `labelPolicy` rule (or `protected`) has `onSend: "block"`, an unevaluated
+  label is refused in every surface and mode: threat #1, category `Encoded file sent by an AI agent without
+  a readable sensitivity label`, `detectorId: "mcp-outbound-unevaluated"`, `match:
+  "unevaluated:label:<n>"`. Otherwise each surface applies its fail mode (`cli/mcp-outbound-fail.mjs`): the
+  hook marks the call capped, so `failMode.hook` closed denies a call it would otherwise allow
+  (`FAIL_CLOSED`, `failWhy` `size-cap` or `label`); the stdio guard and the HTTP gateway refuse a call no
+  check denied under `failMode.mcpGateway` closed (`Fail-closed: MCP call not evaluated`, `failWhy` `size`
+  or `label`). Open (and coach) forwards it with an alert: threat id 0, category `MCP: outbound arguments not
+  fully evaluated`, Medium, `decision: "notify"`, `basisCode: UNEVALUATED_SIZE_CAP`, `failMode: "open"`,
+  `failWhy`, `unevaluatedValues`, never a value; once per session and tool at the hook (the hook's
+  seen-once store, 24 hours), once per tool in each stdio guard process, once per server and tool in each
+  gateway process. `@moorai/agent-sdk` applies the label refusal but has no fail mode for the rest. Limits:
+  a decoded value with more than 2% control bytes is binary and not scanned as text; a value with more than
+  5% other characters and no `data:` prefix is not taken for encoded; a decoder that reads on past a `=`
+  inside the value, or that skips `=`, reads bytes neither reading holds; a benign value over 1 MiB that is
+  95% base64 characters (a newline-separated list of file paths, measured) is unevaluated.
+- **Over-sharing.** Policy `mcpOversharing: false | { action, maxArgBytes, maxEncodedBytes, maxLines,
+  minTurns, minEntropyBits }`; defaults `notify`, 65,536, 16,384, 500, 4, 5.5; `action` one of `off`,
+  `notify` (finding only), `justify` (ask), `block` (deny). Signals: `size` (serialized arguments over
+  `maxArgBytes` bytes), `encoded-blob` (an encoded value decoding to `maxEncodedBytes` or more, or a value of
+  `maxEncodedBytes`+ characters with Shannon entropy ≥ `minEntropyBits` over its first 64 Ki characters),
+  `file-paste` (a decoded value with the magic bytes of ZIP, PDF, OLE, PNG, JPEG, GIF, gzip, ELF or Mach-O,
+  or a value of `maxLines`+ lines), `conversation` (`minTurns`+ chat turns with at least two roles: objects
+  with `role` user / assistant / system / human / ai / model / tool and `content` / `text` / `parts`, or
+  lines starting `User:`, `Assistant:`, `Human:`, `AI:`, `System:`, `Claude:`, `ChatGPT:`, `Model:`). One
+  finding per call: threat id #92 (`OVERSHARE_THREAT`), category
+  `MCP: over-sharing`, `detectorId: "mcp-oversharing"`, `match: "overshare:<keyed hash of the arguments>"`,
+  `oversharing: { signals, bytes, largestValueBytes, lines, turns, fileType?, argsHash }` copied onto the
+  alert by each reporter (`oversharingAlertFields`). A local filesystem write raises no over-sharing
+  finding (`cli/mcp-local-write.mjs`, passed as `localWrite` by the hook and the stdio guard): a write-shaped
+  call (`mcpWriteCalls` in `cli/oversight-mcp.mjs`) to a server that is a local filesystem server by its
+  launch declaration (the reference `@modelcontextprotocol/server-filesystem` as the package the launch runs,
+  its installed `dist/index.js` run by node, or its `mcp-server-filesystem` bin; never a server declared by
+  URL), or whose label the signed policy lists in `mcpOversharing.localWriteServers`. The tool name alone
+  never exempts a call, because the server chooses it. The HTTP gateway and the SDK never exempt: every
+  gateway upstream is remote. The exemption covers only this signal; the data-loss detectors (1 and 2
+  above) run on every call. The stdio guard has no approver, so its `justify` forwards and records,
+  like every other ask there.
+- **#65 at the stdio guard.** `cli/mcp-secret-egress.mjs`: the store secrets (cwd `.env*`,
+  `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials`) and the secrets this server's results
+  carried, matched in the serialized arguments as in the gateway; a deny refuses the call
+  (`MCP: local secret egress`), an unverified ask is settled by `settleNoApproverAsk` (deny unless
+  `headlessAsk: "allow-with-report"`). Alert: threat #65 with `secretEgress` hash prefixes, encodings and
+  source kinds.
+- **Measured.** On the 1,625 benign samples of `test/redteam/benign-corpus-v2.json`, `benign-corpus.json`,
+  `benign-web-content.json` and the Hebrew, Arabic and Russian sets, each sent as one MCP argument with the
+  default policy: one sample gained a finding (a JWT at a line start in a web page, #39 `dlp-jwt`, notify) and
+  none raised over-sharing. Sent again with the lenient decoding (each sample as one value and as an
+  array of its lines, with the default policy and with `labelPolicy` and #90 / #39 block): no verdict,
+  finding or unevaluated result changed.
+- **Cost** (median of 7, a machine under load average ~20): 5.6 ms added to a call with a 2 KB multi-line
+  value (the JSON scan itself: 10.9 ms), 8.9 ms for 100 KB. The extra scans run only the data-loss detectors
+  (an engine view over those detectors). Values not decoded whole (`mergeOutbound` alone, median of 9, load
+  average ~3, before → after the change that made them unevaluated and reads lenient values): a real 4.97 MB
+  PNG 30.5 → 37.6 ms (its first 1 MiB is decoded and tested as text); a small call 0.01 → 0.01 ms, 40 file
+  paths 0.02 → 0.22 ms (each is now decoded leniently), a 2 KB note 0.79 → 0.80 ms; 10,000 encoded values of
+  88 characters 7.6 → 26.1 ms (all are now decoded and scanned). The whole `mcpGateway` on the 4.97 MB PNG:
+  1.5 to 1.7 s before and after, nearly all of it the JSON scan of the serialized arguments.
+- **Tests**: `test/mcp-outbound.test.mjs` (pure, `mcpGateway`; each decode cap, an image and each binary
+  magic over 1 MiB unevaluated, the in-place label read of a ZIP, PDF and OLE file, an unreadable label,
+  `labelReads`; a value with characters Node or Python skip (a card number found, a labelled PDF or .docx
+  refused under `onSend: "block"`, a label read from it unevaluated); past the caps, a labelled PDF with a
+  skipped character or both alphabets refused; the in-place reader's `unreadable` on a ZIP, OLE or PDF with
+  no structure under any name), `test/mcp-outbound-surfaces.test.mjs` (real
+  hook, stdio guard with the fake server, HTTP gateway with the fake upstream; #65 at the guard from `.env`
+  and from a tool result; fail mode closed and open past the caps, one alert per tool under open, and a
+  labelled .docx over 1 MiB and one whose label cannot be read under `onSend: "block"` on each surface; at
+  the hook and the gateway, an image over 1 MiB refused under fail mode closed, and a card number and a
+  labelled PDF or .docx with characters a lenient decoder skips caught; at the gateway, a card number after a
+  mid-value `==` or split two bytes to a run, and a labelled PDF after a mid-value `=`, refused).
+
 ## OT protocol clients from an agent shell (F30, agent side)
 
 [`cli/ot-protocol-client.mjs`](../cli/ot-protocol-client.mjs) over
@@ -3190,6 +3416,68 @@ one Python call. Under `block`, a file over the budget is denied until the backg
 a minute after the first attempt on an enrolled device).
 
 **Tests.** `test/model-pins.test.mjs`.
+
+## MCP server package policy and known-compromised releases
+
+**Status: built and tested on macOS through the real hook and the real MCP stdio guard. The console does not
+yet know the reason codes `MCP_PACKAGE_POLICY` and `PACKAGE_KNOWN_BAD`, the categories, or the policy keys
+`mcpPackagePolicy` and `knownBadPackages`.**
+
+**Known-bad list** (`data/known-bad-packages.js`). Shipped: PyPI `litellm` 1.107.0 (the vendor's incident page,
+https://docs.litellm.ai/blog/security-incident-oct-21-2026, names "A malicious `litellm==1.107.0` package" live on
+PyPI for about two hours on 2026-10-21; its Docker images are not package installs and are not listed) and the 24
+npm releases of 2025-09-08/09 listed at
+https://semgrep.dev/blog/2025/chalk-debug-and-color-on-npm-compromised-in-new-supply-chain-attack. Signed policy
+`knownBadPackages: { action: "block" | "ask" | "report", packages: [{ ecosystem: "npm" | "pypi" | "url", name,
+versions: [..] | "*" }] }` adds entries (never removes a shipped one) and sets the action; default `block`, any other
+value reads as `block`. Names compare as the registry does (npm lower case, PyPI PEP 503); PyPI versions compare
+as PEP 440 releases (1.107 = 1.107.0). A version entry matches only that exact pinned version; `"*"` matches
+every version, unpinned included. A `url` entry is a host + path matched against a script fetched and run by a
+shell.
+
+**Shell check** (`data/package-installs.js` reads the command with `data/shell-parse.js`;
+`cli/package-known-bad.mjs`; one call site in the PreToolUse shell branch of `cli/moorai-hook.mjs`, after the OT
+check, over the command and every decoded script). Read: npm / cnpm / pnpm / yarn / bun install and add, npx /
+bunx / pnpx / `npm exec` / `pnpm dlx` / `yarn dlx` / `bun x` (the first word or `-p`/`--package`), pip / pip3 /
+`python -m pip` install, pipx install / run (`--spec`), uv add, `uv pip install`, `uv tool install` / `run`, uvx
+(`--from`, `--with`), poetry add, pdm add; inside `sh -c`, `pwsh -Command`, `cmd /c`, `eval` and heredocs fed to a
+shell; curl / wget / Invoke-WebRequest piped into a shell or iex, or `bash <(curl …)`. A word in an argument
+(`echo`, `git commit -m`, `grep`) is data. Policy: the verified signed policy only. Decision merged by rank with
+the rest of the branch, never lowering it. Alert: `threatId 57`, category `Known-compromised package release`,
+`stage "prompt"`, `decision` block / ask / alert, `ecosystem`, `knownBadSource` shipped / policy, `matches`, and
+`contentHash` = the keyed hash of `known-bad:<ecosystem>:<name>@<version>`.
+
+**MCP server package policy** (`cli/mcp-package-policy.mjs`). Signed policy `mcpPackagePolicy: "report" | "ask" |
+"block"` or `{ action, pins: { "npm:<name>" | "pypi:<name>": "<exact version>" }, requirePins }`; absent →
+`report`; an action outside the three → `block`. Judged for npm and PyPI launches (`serverIdentity`, the same
+pinning rule as the reputation's `unpinned-version`): `unpinned-version`; `version-not-approved` (a pin for the
+package and another or no version, or `requirePins` and no pin); `critical-check` (a reputation reason in
+`CRITICAL_CODES`: `pkg-known-malicious`, `mcp-typosquat`, `pkg-typosquat`, `repo-mismatch`, `name-not-published`,
+`catalogue-name-not-published`, `catalogue-do-not-install`, `integrity-mismatch`, `pkg-install-script-remote`,
+`tool-poisoning`, `tool-hidden-content`); `known-bad-release` (decided by `knownBadPackages.action`, default block);
+`version-changed` (the reputation cache saw another version: reported, never held, because the cache is
+user-writable). Hook: after the reputation gate in the `mcp__` branch; block denies there, ask is merged with the
+gate's verdict before the fail-closed floor; offline reputation codes only. Guard: judged from the wrapped launch
+after the reputation gate at `tools/call`; block writes an `isError` result and the server never receives the call;
+ask forwards and records (no prompt in a desktop host); the reputation's registry codes count when
+`mcpReputation.lookup` is on. Alert: `threatId 57`, category `MCP: server package supply chain` (report) or `MCP:
+server package held by policy` (ask / block), `packageSignals`, `criticalCodes`, `reasonCode
+MCP_PACKAGE_POLICY`, the server label and a keyed hash of the server identity; posted on first sight or a version
+change (the guard also once per distinct hold). Never the package name, version, path, argument or env.
+
+**Measured** (Apple M5 Max, node 22, load average 30-40): the shell check 7.6 µs for `ls -la`, 17.5 µs for a
+two-installer command; `judgeMcpPackage` 13 µs; marginal module load in the hook about 1 ms each (the MCP module
+loads after `cli/mcp-reputation.mjs`, which the branch already loads).
+
+**Limits.** An unpinned install, a range or a dist-tag of a listed package is not matched, nor a requirements
+file, a lockfile install (`npm ci`, `uv sync`), a transitive dependency, or what an install script downloads. The
+hook's critical checks are the offline ones; `repo-mismatch`, `name-not-published` and integrity need the guard's
+opt-in lookup. Docker and remote MCP servers are not judged by this policy. Only the Claude Code hook and the MCP
+stdio guard run these checks; the HTTP MCP gateway, the model proxy and the Agent SDK do not.
+
+**Tests.** `test/known-bad-packages.test.mjs` (reader, list, policy, judgement, content-free alerts),
+`test/package-supply-chain-hook.test.mjs` (the real hook), `test/mcp-package-proxy.test.mjs` (the real guard with
+a fake `npx` on PATH).
 
 ## Egress proxy (egressRules on real connections)
 
@@ -4968,6 +5256,30 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   action until its signed `validUntil`. The model proxy, MCP gateway and egress proxy do not hold verdicts for
   approval.
 
+## Operator stop (device side)
+
+[`cli/session-stop.mjs`](../cli/session-stop.mjs), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs)
+(`operatorStop`, Claude Code `PreToolUse` and `UserPromptSubmit`). Console side: `server/session-stop.js` in the
+console repository. Test: `test/session-stop-hook.test.mjs`.
+
+- **Policy key.** Top-level `agentStops: [{ id: "st-<32 hex>", scope: "session" | "device", session?: "h2:<16 hex>",
+  at, reason? }]`, read from the verified policy only (live, cached or last-known-good; an unsigned, altered or
+  foreign-key body applies no stop). An entry with another id shape, scope or session shape is dropped. The console
+  serves a stop only to the actors it concerns and only on a device fetch.
+- **Effect.** A session stop matches the hook's keyed session hash (the `session` on its alerts); a device stop
+  matches every session. Every matching `PreToolUse` is denied and every matching `UserPromptSubmit` blocked
+  (reason code `SESSION_KILL`). Not on an unenrolled (coached) device. Lifting is the console no longer serving it.
+- **First call of a session** (once per stop and session, `~/.moorai/exceptions-seen.json`): one content-free
+  alert (`category` "Session stopped by an administrator", `reasonCode` `SESSION_KILL`, `stopId`, `stopScope`,
+  `signalled`), then `SIGTERM` to the agent process: the hook's parent chain walked past at most four hook shells
+  (and a shim's node), signalled only when it is an AI CLI (`ai-cli-parents.mjs` AGENTS) or node, on macOS and
+  Linux. A device stop also writes `~/.moorai/kill-session`, which the desktop host consumes to end its PTY agent.
+- **Limits.** Applied on the first hook call after the 60-second policy cache; Windows is denied but not
+  signalled; no network block; the model proxy, MCP gateway and egress proxy do not read `agentStops`; a device
+  that cannot reach the console does not learn of a stop; a same-user process that rewrites the policy cache and
+  the advisory policy mark can serve a policy signed before the stop until its maximum age (15 minutes by default)
+  unless a root-owned policy mark is installed.
+
 ## Weakening oversight (#84)
 
 [`cli/oversight-signals.mjs`](../cli/oversight-signals.mjs) (Write / Edit / MultiEdit, judged on the file before
@@ -5523,7 +5835,7 @@ in CI.
   both MCP spec eras' headers passed through, staged JSON-RPC / MCP validation (`SCHEMA_INVALID`, refused
   by default), a 4 MiB response cap (`RESPONSE_TOO_LARGE`), a per-client cool-down (`CLIENT_COOLDOWN`, off
   by default because loopback clients share one address) and declared workload profiles on `tools/call`
-  (`PROFILE_DRIFT`); about 4.7–5 ms added at p50, 98 tests against a fake upstream and a fake console.
+  (`PROFILE_DRIFT`); about 4.7–5 ms added at p50, 115 tests against a fake upstream and a fake console.
   Run against a real remote MCP server (an AppCrane MCP endpoint over Streamable HTTP: initialize, tools/list with 62 tools and a read-only tools/call passed through intact; a malformed message and an over-cap response were refused).
   Real clients (2026-10-06, macOS): Claude Code 2.1.284, cursor-agent, the MCP TypeScript SDK 1.32.1 and the
   MCP Inspector 2.9.0 completed the handshake and listed tools through the gateway and the stdio proxy,
@@ -5559,6 +5871,30 @@ in CI.
   in the query string is refused (400). The gateway runs no authorization flow and stores no token. The token
   the client obtains names the gateway route as its RFC 8707 resource, so a remote server that validates the
   audience strictly refuses it unless its authorization server issues tokens for that resource.
+  [`mcp-gateway/oauth-gate.mjs`](../mcp-gateway/oauth-gate.mjs) (signed policy `mcpOAuth`, each check
+  `"block" | "report" | "off"`): on every request with a Bearer token, before the body is read, a JWT's
+  claims are read unverified (`oauth-token.mjs`). `audience` (default report): an http(s) URI among the `aud` values and
+  none of them the remote (same origin, whole-segment path prefix), the gateway route (Host; loopback names equal) or
+  an `audiences.<server>` entry → reported; under block 401 `invalid_token` with the route's `resource_metadata`. `issuer` (default
+  report): `iss` not among the remote metadata's `authorization_servers`, once the gateway has served that
+  metadata. `scopeAction` (default report) with `scopes.<server>`: a scope outside the list → 403 under block;
+  a remote challenge's `scope` outside it is reported. `tokenReuse` (default report): one bearer value (opaque,
+  or a JWT whose `aud` values are not all http(s) URIs) on two remote origins, held in memory as a sha256 prefix (4,096). `malformed`
+  (follows `audience`): an `Authorization` value naming Bearer that is not exactly one token, or a second
+  `Authorization` header (rawHeaders; Node keeps the first) → reported; under block 400 `invalid_request`; each
+  token-shaped part (at most 8) still gets the checks above. `authServer`
+  (default off): before serving the remote metadata, each named authorization server's RFC 8414 / OIDC
+  metadata (`oauth-as-check.mjs`, the revision's URL order, egress-checked, at most four: a document naming
+  more fails as a whole, check `too-many-servers`, nothing fetched; https only, an IP
+  literal and every resolved address public by `egress-proxy/address.mjs`, loopback only for a loopback route
+  upstream, metadata addresses never, a new connection per fetch; a refused address is never fetched and fails as
+  `address`; metadata at an allowed address that cannot be read is no verdict; one read per
+  route shared by concurrent requests, the metadata URL being unauthenticated) must have an
+  identical `issuer`, https (or loopback http) endpoints and `S256` in `code_challenge_methods_supported`;
+  block → 502. Coach forwards a block as `coach`. Alerts: `MCP_OAUTH`, `oauthCheck`, a count or check names,
+  no token, claim, scope name, URL or hash. Not seen: the authorization request, redirect URI, `state`,
+  token request, refresh tokens, client registration, and tokens a remote sends downstream
+  (`test/mcp-gateway-oauth.test.mjs`).
 - **Model calls** go through the model proxy ([`model-proxy/`](../model-proxy/README.md)) when the agent's
   SDK base URL points at it: prompts and fed-back tool results are scanned, and the tool calls the model
   returns are decided as the sidecar decides them. Report-only by default (byte-identical pass-through,

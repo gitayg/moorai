@@ -69,6 +69,7 @@ import { fileScanPolicy } from "../cli/file-scan-policy.mjs";
 import { loadFileScanKeys } from "../cli/file-scan-keys.mjs";
 import { createFileScanner, fileScanDecision, fileScanAlert, mimeClass, PROVIDER_LABEL } from "../cli/file-scan.mjs";
 import { headlessAskMode } from "../cli/server-mode.mjs";
+import { createIdentityGate } from "./identity.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -92,7 +93,7 @@ export const TOKEN_HEADER = "x-moorai-proxy-token";
 export const SESSION_HEADER = "x-claude-code-session-id";
 // X-MoorAI-Session-Id names the session for intent alignment (intent.mjs); it is addressed to this proxy and
 // is not sent upstream.
-export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-session-id"]);
+export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-session-id", "x-moorai-agent-identity"]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // Report-only work runs after the response is complete, so a scan (≈10 ms for 2 KB, measured) never
@@ -213,6 +214,7 @@ export async function createProxy(opts = {}) {
   // with its own sessions (intent.mjs) and runtime.toolCall carries none (every risky call would be task-unknown).
   const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy", intentStore: false });
   await rt.ready();
+  const identityGate = createIdentityGate(rt, { enforce });
   wrapReporter(rt, { enforce });
   const consoleConfig = resolveSettings({ console: o.console }, { env: o.env || process.env, system: o.systemConfig }).config;
   const tracer = createTracer({ tenantKey: consoleConfig.installToken, agentName: rt.identity.agentName });
@@ -682,6 +684,8 @@ export async function createProxy(opts = {}) {
     current.trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate, sessionKey: req.headers[SESSION_HEADER] });
     current.provider = providerOf(api, route.prefix);
     if (api === gemini) current.model = modelOf(api, rest, null);
+    const idRefuse = await identityGate(req, current);
+    if (idRefuse) { req.resume(); throw Object.assign(new HttpError(idRefuse.status, idRefuse.message.replace(/^MoorAI: /, "")), { api }); }
     const dh = decoy.request(req.rawHeaders, query);
     if (dh) { req.resume(); return refuseDecoy(res, api, dh, "header"); }
     let swaps = null;

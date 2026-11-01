@@ -46,11 +46,12 @@
 // the policy this runtime loaded and the root-owned admin binding (which wins key by key); the task is
 // captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
+import { createHmac, randomBytes } from "node:crypto";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, spanHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
-import { taskBoundLib } from "./core.mjs";
+import { taskBoundLib, cascadeLib } from "./core.mjs";
 
 const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer, saferAlternativesFor } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
@@ -310,17 +311,53 @@ export async function createMoorAI(options = {}) {
     return w;
   }
 
+  // CASCADE LIMITS (data/cascade-limits.js), per session id (namespaced by owner) in memory, ids keyed with a
+  // random per-runtime HMAC key: sub-agent spawn rate and depth (agent: the hook input's agent_id; a spawn's
+  // result binds its child through spawnResult), the same call after consecutive failures (toolFailure), and a
+  // session held after repeated denials. policy.cascadeLimits decides: "report" (default) alerts once per limit
+  // per session, "ask" raises an allow to ask (then settled by the headless rule), "block" denies; a branch deny
+  // stays a deny. A call with no session id is not counted. options.cascade false: off.
+  const cascade = options.cascade === false ? null : cascadeLib.cascadeMemory();
+  const ckey = randomBytes(32);
+  const ch = (x) => createHmac("sha256", ckey).update(x).digest("hex").slice(0, 16);
+  const cSession = (session, owner) => (typeof session === "string" && session ? ch(`s:${ownerKey(owner)}\0${session}`) : "");
+  const cAgent = (a) => (typeof a === "string" && a ? ch(`a:${a}`) : "");
+  function cascadeStep(s, v, { tool, input, session, owner, agent, agentType, toolUseId, sess }) {
+    const sk = cSession(session, owner);
+    if (!cascade || !sk) return v;
+    const cfg = cascadeLib.cascadeConfig(s.policy);
+    if (cascadeLib.cascadeOff(cfg)) return v;
+    const ti = input && typeof input === "object" ? input : {};
+    const r = cascade.assess(sk, { agent: cAgent(agent), agentType: typeof agentType === "string" && agentType ? ch(`t:${agentType}`) : "", sig: ch(cascadeLib.callText(tool, ti)), spawn: tool === "Agent" || tool === "Task", spawnType: typeof ti.subagent_type === "string" && ti.subagent_type ? ch(`t:${ti.subagent_type}`) : "", spawnId: typeof toolUseId === "string" && toolUseId ? ch(`u:${toolUseId}`) : "" }, Date.now(), cfg);
+    for (const a of r.alerts) reporter.post({ ...a, tool: `hook:${v.tool}`, ...sess }, { prov: prov(s, "PreToolUse") });
+    if (!r.level || v.decision === "deny") return v;
+    const w = { ...v, cascade: { level: r.level } };
+    if (r.level === "block") return { ...w, decision: "deny", reason: r.reason, alternatives: [] };
+    return v.decision === "allow" ? { ...w, decision: "ask", reason: r.reason, alternatives: [] } : { ...w, reason: `${v.reason}, ${r.reason}` };
+  }
+  // A failed tool call (the SDK's PostToolUseFailure), and a spawn's result naming its child (PostToolUse(Agent)
+  // tool_response.agentId), for the cascade limits.
+  function toolFailure({ tool, input, session, owner, agent } = {}) {
+    const sk = cSession(session, owner);
+    if (cascade && sk) cascade.failure(sk, { agent: cAgent(agent), sig: ch(cascadeLib.callText(tool, input && typeof input === "object" ? input : {})) }, Date.now());
+  }
+  function spawnResult({ session, owner, agent, toolUseId, childId } = {}) {
+    const sk = cSession(session, owner);
+    if (cascade && sk && cAgent(childId)) cascade.bind(sk, { caller: cAgent(agent), child: cAgent(childId), spawnId: typeof toolUseId === "string" && toolUseId ? ch(`u:${toolUseId}`) : "" }, Date.now());
+  }
+
   // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment (a call
-  // with no session has no task: a risky one is task-unknown) and the task-bound checks, then settled for a
-  // headless run.
-  async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
+  // with no session has no task: a risky one is task-unknown), the task-bound checks and the cascade limits,
+  // then settled for a headless run.
+  async function toolCall({ tool, input, cwd, permissionMode = "", session, owner, agent, agentType, toolUseId } = {}) {
     const s = await ready();
     const sess = sessionOf(session);
     const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess, session, owner) });
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
-    const v = boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner);
+    const v = cascadeStep(s, boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner), { tool, input, session, owner, agent, agentType, toolUseId, sess });
     const st = settle(s, v, { tool: v.tool, permissionMode, sess });
+    if (st.decision === "deny" && cascade && !v.cascade && cSession(session, owner)) cascade.denied(cSession(session, owner), Date.now(), cascadeLib.cascadeConfig(s.policy));
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
     return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(v.intent ? { intent: v.intent } : {}), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
@@ -355,5 +392,5 @@ export async function createMoorAI(options = {}) {
     return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, held, denied };
   }
 
-  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough, admin: settings.admin }, ready, scan, toolCall, captureTask, setTaskId, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
+  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough, admin: settings.admin }, ready, scan, toolCall, toolFailure, spawnResult, captureTask, setTaskId, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
 }

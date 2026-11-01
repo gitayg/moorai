@@ -108,6 +108,15 @@
             "command": "/opt/moorai/bin/moorai-hook"
           }
         ]
+      },
+      {
+        "matcher": "ReadMcpResourceTool",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/moorai/bin/moorai-hook"
+          }
+        ]
       }
     ],
     "PostToolUse": [

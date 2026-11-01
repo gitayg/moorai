@@ -82,7 +82,7 @@ function canon(v, depth = 0) {
   if (v && typeof v === "object") return `{${Object.keys(v).sort().slice(0, 256).map((k) => `${JSON.stringify(k)}:${canon(v[k], depth + 1)}`).join(",")}}`;
   return JSON.stringify(v === undefined ? null : v);
 }
-const callSig = (tool, input) => h(`call:${tool}\n${canon(input || {}).slice(0, 65536)}`);
+export const callSig = (tool, input) => h(`call:${tool}\n${canon(input || {}).slice(0, 65536)}`);
 const circuitKey = (sessionId, agentId) => h(`cb:${sessionId || ""}|${agentId || ""}`);
 
 // ---- origin taint: which paths of this call came from outside ----
@@ -146,7 +146,7 @@ export function originOf(path, { cwd = "", now = Date.now(), platform = process.
 // score }. Escalation is returned in mode "ask", and when the device coaches (where the hook turns it into coach
 // text, never a prompt). `origin` is returned whenever a gated action falls inside an origin-taint window; the
 // hook applies its level ("notify": the alert only).
-export function sessionRiskStep({ policy, admin = null, sessionId, event, tool, identity, text, findings, stage, coach = false, origin: oin = null, now = Date.now(), platform = process.platform }) {
+export function sessionRiskStep({ policy, admin = null, sessionId, event, tool, identity, text, findings, stage, coach = false, origin: oin = null, readId = null, now = Date.now(), platform = process.platform }) {
   const none = { alerts: [], escalate: null, score: 0 };
   try {
     const cfg = sessionRiskConfig(policy, { admin });
@@ -160,6 +160,9 @@ export function sessionRiskStep({ policy, admin = null, sessionId, event, tool, 
     const ev = classifyEvent({ event, tool: tool === "PowerShell" ? "PowerShell" : tool, identity, textLen: typeof text === "string" ? text.length : 0, findings, stage });
     ev.hostKeys = ev.hosts.map((x) => h(`host:${x}`));
     ev.readKey = ev.read && identity ? h(`path:${identity}`) : null;
+    // An MCP read (a resources/read, or a read / query tool call): one distinct read toward the mass read, keyed on
+    // the server, tool and arguments (cli/mcp-harvest.mjs readIdentity).
+    if (typeof readId === "string" && readId && event !== "PostToolUse") { ev.read = true; ev.readKey = h(`mcp:${readId}`); }
     if (off) { ev.weight = 0; ev.taint = false; ev.taintIds = []; ev.read = false; }
     const raw = readSessionState(SESSION_RISK_FILE) || { v: 1, sessions: {} };
     if (originOn && oin && typeof oin === "object" && event !== "PostToolUse") Object.assign(ev, originFacts(raw, sk, oin, now, platform));

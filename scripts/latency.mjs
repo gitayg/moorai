@@ -68,6 +68,10 @@ module loading and decision. The **in-process** rows are what the Agent SDK and 
 call in a long-lived process: \`engine.scan\` per stage over every text in
 \`test/redteam/benign-corpus-v2.json\`, and \`createMoorAI().toolCall\` (the decision code the parity test
 holds to the hook's verdicts) over a fixed mix of ten \`PreToolUse\` calls, six benign and four attack-shaped.
+The **hook over HTTP** row is the same event POSTed to \`moorai-hookd\` (Claude Code's \`http\` hook
+transport), in the same loop as the hook, timed from request to answer over a kept-alive connection; its
+decision is checked against the hook's for every call. Its workers have loaded the hook's modules before the
+request, so the row is what remains: the hook's own module, its decision and its exit.
 All rows run sequentially, one call at a time; machine load is not controlled.
 
 Percentiles are nearest-rank over the raw per-call timings, never interpolated and never derived from a
